@@ -57,7 +57,7 @@ async function sendLineNotification(message: string) {
 async function syncToGoogleSheet(action: 'INSERT' | 'UPDATE' | 'DELETE' | 'SYNC_ALL_DATA' | string, table: string, data: any) {
   try {
     const db = getDatabase();
-    const webhookUrl = db.settings?.googleSheetWebhookUrl;
+    const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || db.settings?.googleSheetWebhookUrl;
     if (!webhookUrl || !webhookUrl.startsWith('http')) return;
     
     // Non-blocking asynchronous sync to Google Sheets
@@ -1158,7 +1158,7 @@ async function startServer() {
     else if (action === 'start_travel') {
       const currentStaff = db.staff.find(s => s.StaffID === booking.StaffID);
       const staffName = currentStaff ? currentStaff.Nickname : 'พนักงาน';
-      sendLineNotification(`🛵 พนักงานกำลังเดินทาง!\nรหัสการจอง: ${booking.BookingID}\nพนักงาน: พี่${staffName}\nระยะทาง: ${booking.Distance} กม.`);
+      // No LINE notification when traveling as requested
       booking.Status = 'Working';
 
       // Notify customer

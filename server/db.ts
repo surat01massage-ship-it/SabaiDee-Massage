@@ -87,7 +87,7 @@ const defaultUsers: User[] = [
     UserID: "U001",
     Name: "สมชาย ยิ่งดี (แอดมิน)",
     Phone: "0812345678",
-    PasswordHash: "admin123", // For mock DB, simple match
+    PasswordHash: "admin123",
     Email: "admin@sabaidee.com",
     Address: "123/45 ถนนสุขุมวิท เขตวัฒนา กรุงเทพฯ",
     Province: "กรุงเทพมหานคร",
@@ -100,7 +100,7 @@ const defaultUsers: User[] = [
     Status: "Active",
     CreatedDate: "2026-01-01T08:00:00Z"
   },
-  // Staff Users
+  // Test Staff User
   {
     UserID: "U002",
     Name: "วรรณภา แสนดี (พี่นง)",
@@ -118,41 +118,7 @@ const defaultUsers: User[] = [
     Status: "Active",
     CreatedDate: "2026-03-15T09:30:00Z"
   },
-  {
-    UserID: "U003",
-    Name: "กรรณิการ์ จิตใจงาม (พี่ก้อย)",
-    Phone: "0834567890",
-    PasswordHash: "staff123",
-    Email: "koi@sabaidee.com",
-    Address: "15 ลาดพร้าว ซอย 18 เขตจตุจักร กรุงเทพฯ",
-    Province: "กรุงเทพมหานคร",
-    District: "เขตจตุจักร",
-    SubDistrict: "จอมพล",
-    Latitude: 13.803455,
-    Longitude: 100.569421,
-    ProfileImage: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=60",
-    Role: "Staff",
-    Status: "Active",
-    CreatedDate: "2026-04-10T10:15:00Z"
-  },
-  {
-    UserID: "U004",
-    Name: "อัญชลี รักษ์ดี (พี่นุ่ม)",
-    Phone: "0845678901",
-    PasswordHash: "staff123",
-    Email: "num@sabaidee.com",
-    Address: "45/7 ถนนรัชดาภิเษก เขตห้วยขวาง กรุงเทพฯ",
-    Province: "กรุงเทพมหานคร",
-    District: "เขตห้วยขวาง",
-    SubDistrict: "ห้วยขวาง",
-    Latitude: 13.776123,
-    Longitude: 100.575892,
-    ProfileImage: "https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?w=150&auto=format&fit=crop&q=60",
-    Role: "Staff",
-    Status: "Active",
-    CreatedDate: "2026-05-01T14:20:00Z"
-  },
-  // Customer User
+  // Test Customer User
   {
     UserID: "U005",
     Name: "อภิสิทธิ์ วรศิลป์",
@@ -181,135 +147,26 @@ const defaultStaff: Staff[] = [
     Age: 38,
     Experience: 8,
     Description: "ถนัดนวดไทยกดจุด แก้อาการออฟฟิศซินโดรม นวดรีดเส้น และนวดประคบสมุนไพร ใจดี พูดจาไพเราะ ยินดีให้บริการค่ะ",
-    Rating: 4.9,
-    ReviewCount: 24,
-    Credit: 450,
+    Rating: 5.0,
+    ReviewCount: 0,
+    Credit: 1000,
     Available: "ON",
     VerifyStatus: "Approved",
     CurrentLatitude: 13.779743,
     CurrentLongitude: 100.544773,
     LastLocationUpdate: "2026-06-27T18:50:00Z",
-    TotalIncome: 14500,
-    TotalJobs: 38
-  },
-  {
-    StaffID: "SFT002",
-    UserID: "U003",
-    Nickname: "ก้อย",
-    Gender: "Female",
-    Age: 29,
-    Experience: 4,
-    Description: "เชี่ยวชาญการนวดอโรมา นวดสปา ขัดผิว และนวดฝ่าเท้าสไตล์ผ่อนคลาย เหมาะสำหรับผู้ที่ต้องการความผ่อนคลายสูงสุดหลังเหน็ดเหนื่อยจากการทำงานค่ะ",
-    Rating: 4.7,
-    ReviewCount: 15,
-    Credit: 300,
-    Available: "ON",
-    VerifyStatus: "Approved",
-    CurrentLatitude: 13.803455,
-    CurrentLongitude: 100.569421,
-    LastLocationUpdate: "2026-06-27T18:52:00Z",
-    TotalIncome: 8200,
-    TotalJobs: 18
-  },
-  {
-    StaffID: "SFT003",
-    UserID: "U004",
-    Nickname: "นุ่ม",
-    Gender: "Female",
-    Age: 42,
-    Experience: 12,
-    Description: "ผ่านการอบรมจากศูนย์ฝึกนวดแผนไทยวัดโพธิ์ นวดแผนโบราณ นวดแก้อาการหลัง สะบักจม นวดแก้ไมเกรน ฝีมือการนวดหนักเบาสามารถแจ้งได้เลยค่ะ",
-    Rating: 4.8,
-    ReviewCount: 31,
-    Credit: 80, // Low credit for demo (below default minCredit requirement)
-    Available: "ON",
-    VerifyStatus: "Approved",
-    CurrentLatitude: 13.776123,
-    CurrentLongitude: 100.575892,
-    LastLocationUpdate: "2026-06-27T18:45:00Z",
-    TotalIncome: 21000,
-    TotalJobs: 54
+    TotalIncome: 0,
+    TotalJobs: 0
   }
 ];
 
-const defaultBookings: Booking[] = [
-  {
-    BookingID: "B001",
-    CustomerID: "U005",
-    StaffID: "SFT001",
-    BookingDate: "2026-06-26",
-    BookingTime: "14:00",
-    ServiceID: "S001",
-    ServicePrice: 350,
-    Distance: 5.4,
-    TravelFee: 81,
-    TotalPrice: 431,
-    CustomerLatitude: 13.743122,
-    CustomerLongitude: 100.588421,
-    CustomerAddress: "คอนโดศุภาลัย ปาร์ค เอกมัย-ทองหล่อ ถ.เพชรบุรีตัดใหม่ แขวงบางกะปิ เขตห้วยขวาง กรุงเทพฯ",
-    Status: "Completed",
-    PaymentStatus: "Paid",
-    CreatedDate: "2026-06-26T13:10:00Z"
-  }
-];
+const defaultBookings: Booking[] = [];
 
-const defaultTransactions: CreditTransaction[] = [
-  {
-    TransactionID: "TX001",
-    StaffID: "SFT001",
-    Amount: 500,
-    BeforeCredit: 0,
-    AfterCredit: 500,
-    Type: "Topup",
-    SlipImage: "https://images.unsplash.com/photo-1554415707-6e8cfc93fe23?w=150&auto=format&fit=crop&q=60",
-    Status: "Approved",
-    AdminRemark: "ยอดโอนผ่านพร้อมเพย์ ได้รับการตรวจสอบและอนุมัติแล้ว",
-    CreatedDate: "2026-06-15T10:00:00Z"
-  },
-  {
-    TransactionID: "TX002",
-    StaffID: "SFT001",
-    Amount: 50,
-    BeforeCredit: 500,
-    AfterCredit: 450,
-    Type: "Deduct",
-    SlipImage: "",
-    Status: "Approved",
-    AdminRemark: "หักค่าบริการคอมมิชชัน Booking #B001",
-    CreatedDate: "2026-06-26T15:30:00Z"
-  }
-];
+const defaultTransactions: CreditTransaction[] = [];
 
-const defaultReviews: Review[] = [
-  {
-    ReviewID: "R001",
-    BookingID: "B001",
-    CustomerID: "U005",
-    StaffID: "SFT001",
-    Score: 5,
-    Comment: "นวดดีมากค่ะ เจ้นงนวดน้ำหนักพอดี แก้อาการบ่าไหล่ตึงได้ตรงจุดมาก คุ้มค่าเงินจริงๆ",
-    CreatedDate: "2026-06-26T16:00:00Z"
-  }
-];
+const defaultReviews: Review[] = [];
 
-const defaultNotifications: Notification[] = [
-  {
-    NotificationID: "N001",
-    UserID: "U002",
-    Title: "ยินดีต้อนรับสู่ SabaiDee Massage!",
-    Detail: "บัญชีผู้ให้บริการของคุณได้รับการเปิดใช้งานแล้ว กรุณาเติมเครดิตเพื่อเริ่มรับงานบริการนวดจากลูกค้า",
-    ReadStatus: "Unread",
-    CreatedDate: "2026-06-15T09:30:00Z"
-  },
-  {
-    NotificationID: "N002",
-    UserID: "U005",
-    Title: "บริการนวดของคุณเสร็จสิ้นแล้ว",
-    Detail: "การจอง #B001 ได้รับการบริการเสร็จสิ้นแล้ว คุณสามารถเขียนรีวิวเพื่อให้คะแนนความพึงพอใจแก่พี่นงได้",
-    ReadStatus: "Read",
-    CreatedDate: "2026-06-26T15:30:00Z"
-  }
-];
+const defaultNotifications: Notification[] = [];
 
 export function getDatabase(): DatabaseSchema {
   if (!fs.existsSync(DB_PATH)) {
