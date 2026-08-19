@@ -1,0 +1,1875 @@
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, Type } from '@google/genai';
+import { getDatabase, saveDatabase, DatabaseSchema } from './server/db';
+import { User, Staff, Service, Booking, CreditTransaction, Review, Notification, AppSettings } from './src/types';
+
+// Simple unique ID generator
+const generateId = (prefix: string): string => {
+  return `${prefix}${Math.floor(100000 + Math.random() * 900000)}`;
+};
+
+let aiClient: GoogleGenAI | null = null;
+function getAi(): GoogleGenAI | null {
+  if (!aiClient && process.env.GEMINI_API_KEY) {
+    aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+    });
+  }
+  return aiClient;
+}
+
+// LINE Messaging API helper (Sends ONLY to specified Admin User ID or Admin Group ID - NEVER broadcasted to customers)
+async function sendLineNotification(message: string) {
+  try {
+    const db = getDatabase();
+    const token = process.env.LINE_CHANNEL_ACCESS_TOKEN || db.settings?.lineChannelAccessToken;
+    const adminId = process.env.LINE_ADMIN_USER_ID || db.settings?.lineAdminUserId;
+    
+    if (!token || !adminId) {
+      return;
+    }
+    
+    const res = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        to: adminId.trim(),
+        messages: [{ type: 'text', text: message }]
+      })
+    });
+    
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[LINE Push Message Error] ${res.status}:`, errText);
+    }
+  } catch (error: any) {
+    console.error('Failed to send LINE notification:', error?.message);
+  }
+}
+
+// Google Sheets Webhook Sync Helper (Real-time and batch support)
+async function syncToGoogleSheet(action: 'INSERT' | 'UPDATE' | 'DELETE' | 'SYNC_ALL_DATA' | string, table: string, data: any) {
+  try {
+    const db = getDatabase();
+    const webhookUrl = db.settings?.googleSheetWebhookUrl;
+    if (!webhookUrl || !webhookUrl.startsWith('http')) return;
+    
+    // Non-blocking asynchronous sync to Google Sheets
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      redirect: 'follow',
+      body: JSON.stringify({
+        action,
+        table,
+        data,
+        timestamp: new Date().toISOString()
+      })
+    }).then(res => {
+      if (!res.ok) {
+        console.warn(`[GoogleSheetSync] ${table} (${action}) responded with status ${res.status}`);
+      }
+    }).catch(err => {
+      console.error(`[GoogleSheetSync] Error syncing ${table} (${action}):`, err.message);
+    });
+  } catch (error: any) {
+    console.error('[GoogleSheetSync] Exception:', error?.message);
+  }
+}
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  // Middleware for body parsing
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // --- API Routes ---
+
+  // 1. Authenticated User / Session Info Helper
+  app.post('/api/auth/register', (req, res) => {
+    const db = getDatabase();
+    const { name, phone, password, email, address, province, district, subDistrict, latitude, longitude, role, staffInfo } = req.body;
+
+    if (!name || !phone || !password || !role) {
+      return res.status(400).json({ error: 'กรุณากรอกข้อมูลสำคัญให้ครบถ้วน (ชื่อ, เบอร์โทรศัพท์, รหัสผ่าน, บทบาท)' });
+    }
+
+    const existingUser = db.users.find(u => u.Phone === phone);
+    if (existingUser) {
+      return res.status(400).json({ error: 'เบอร์โทรศัพท์นี้ถูกใช้งานแล้วในระบบ' });
+    }
+
+    const newUserID = generateId('U');
+    const newUser: User = {
+      UserID: newUserID,
+      Name: name,
+      Phone: phone,
+      PasswordHash: password, // simple store for demo
+      Email: email || '',
+      Address: address || '',
+      Province: province || '',
+      District: district || '',
+      SubDistrict: subDistrict || '',
+      Latitude: parseFloat(latitude) || 13.7563,
+      Longitude: parseFloat(longitude) || 100.5018,
+      ProfileImage: req.body.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=60',
+      Role: role,
+      Status: 'Active',
+      CreatedDate: new Date().toISOString()
+    };
+
+    db.users.push(newUser);
+    syncToGoogleSheet('INSERT', 'Users', newUser);
+
+    // If registering as Staff, create Staff record
+    if (role === 'Staff') {
+      const newStaffID = generateId('SFT');
+      const info = staffInfo || {};
+      const newStaff: Staff = {
+        StaffID: newStaffID,
+        UserID: newUserID,
+        Nickname: info.nickname || name.split(' ')[0],
+        Gender: info.gender || 'Female',
+        Age: parseInt(info.age) || 30,
+        Weight: parseInt(info.weight) || 50,
+        Height: parseInt(info.height) || 160,
+        RegisteredAddress: info.registeredAddress || newUser.Address,
+        Experience: parseInt(info.experience) || 2,
+        Description: info.description || 'ยินดีให้บริการนวดเพื่อสุขภาพค่ะ',
+        Rating: 5.0,
+        ReviewCount: 0,
+        Credit: 10000, // starting credit for testing
+        Available: 'OFF',
+        VerifyStatus: 'Pending', // staff registration starts as Pending for Admin Approval
+        CurrentLatitude: newUser.Latitude,
+        CurrentLongitude: newUser.Longitude,
+        LastLocationUpdate: new Date().toISOString(),
+        TotalIncome: 0,
+        TotalJobs: 0,
+        OfferedServices: getDatabase().services.map(s => s.ServiceID),
+        MaxJobDistance: 15
+      };
+      db.staff.push(newStaff);
+      syncToGoogleSheet('INSERT', 'Staff', newStaff);
+
+      // Notification to Admin about new registration
+      const adminUsers = db.users.filter(u => u.Role === 'Admin');
+      adminUsers.forEach(admin => {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: admin.UserID,
+          Title: "มีผู้สมัครเป็นพนักงานใหม่",
+          Detail: `พนักงานนวดคนใหม่ คุณ ${name} (ชื่อเล่น ${newStaff.Nickname}) ได้สมัครสมาชิกเข้ามา รอการอนุมัติ`,
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      });
+    }
+
+    if (role === 'Staff') {
+      sendLineNotification(`🎉 มีพนักงานใหม่สมัครใช้งาน!\nชื่อ: ${name}\nเบอร์โทร: ${phone}\n(รอการอนุมัติ)`);
+    } else {
+      sendLineNotification(`🎉 มีลูกค้าใหม่สมัครใช้งาน!\nชื่อ: ${name}\nเบอร์โทร: ${phone}`);
+    }
+
+    saveDatabase(db);
+    res.json({ success: true, user: newUser });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const db = getDatabase();
+    const { phone, password } = req.body;
+
+    const user = db.users.find(u => u.Phone === phone && u.PasswordHash === password);
+    if (!user) {
+      return res.status(401).json({ error: 'เบอร์โทรศัพท์หรือรหัสผ่านไม่ถูกต้อง' });
+    }
+
+    if (user.Status === 'Inactive') {
+      return res.status(403).json({ error: 'บัญชีของคุณถูกระงับการใช้งานชั่วคราว กรุณาติดต่อแอดมิน' });
+    }
+
+    let staffDetails = null;
+    if (user.Role === 'Staff') {
+      staffDetails = db.staff.find(s => s.UserID === user.UserID) || null;
+    }
+
+    res.json({
+      success: true,
+      user,
+      staff: staffDetails
+    });
+  });
+
+  // Update Profile
+  app.put('/api/auth/profile', (req, res) => {
+    const db = getDatabase();
+    const { userId, name, email, address, province, district, subDistrict, latitude, longitude, profileImage, staffInfo } = req.body;
+
+    const userIndex = db.users.findIndex(u => u.UserID === userId);
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้ในระบบ' });
+    }
+
+    const user = db.users[userIndex];
+    user.Name = name || user.Name;
+    user.Email = email !== undefined ? email : user.Email;
+    user.Address = address !== undefined ? address : user.Address;
+    user.Province = province !== undefined ? province : user.Province;
+    user.District = district !== undefined ? district : user.District;
+    user.SubDistrict = subDistrict !== undefined ? subDistrict : user.SubDistrict;
+    user.Latitude = latitude !== undefined ? parseFloat(latitude) : user.Latitude;
+    user.Longitude = longitude !== undefined ? parseFloat(longitude) : user.Longitude;
+    if (profileImage) {
+      user.ProfileImage = profileImage;
+    }
+
+    let staffDetails = null;
+    if (user.Role === 'Staff') {
+      const staffIndex = db.staff.findIndex(s => s.UserID === userId);
+      if (staffIndex !== -1) {
+        const staff = db.staff[staffIndex];
+        if (staffInfo) {
+          staff.Nickname = staffInfo.nickname || staff.Nickname;
+          staff.Gender = staffInfo.gender || staff.Gender;
+          staff.Age = staffInfo.age !== undefined ? parseInt(staffInfo.age) : staff.Age;
+          staff.Weight = staffInfo.weight !== undefined ? parseInt(staffInfo.weight) : staff.Weight;
+          staff.Height = staffInfo.height !== undefined ? parseInt(staffInfo.height) : staff.Height;
+          staff.RegisteredAddress = staffInfo.registeredAddress !== undefined ? staffInfo.registeredAddress : staff.RegisteredAddress;
+          staff.Experience = staffInfo.experience !== undefined ? parseInt(staffInfo.experience) : staff.Experience;
+          staff.Description = staffInfo.description !== undefined ? staffInfo.description : staff.Description;
+          if (staffInfo.offeredServices !== undefined) {
+            staff.OfferedServices = staffInfo.offeredServices;
+          }
+          if (staffInfo.maxJobDistance !== undefined) {
+            staff.MaxJobDistance = parseInt(staffInfo.maxJobDistance);
+          }
+        }
+        staff.CurrentLatitude = user.Latitude;
+        staff.CurrentLongitude = user.Longitude;
+        staffDetails = staff;
+      }
+    }
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Users', user);
+    if (staffDetails) {
+      syncToGoogleSheet('UPDATE', 'Staff', staffDetails);
+    }
+    res.json({ success: true, user, staff: staffDetails });
+  });
+
+  // Geocoding Proxy Endpoints to avoid CORS/rate-limiting/Failed to fetch on client
+  app.get('/api/geocode/reverse', async (req, res) => {
+    const lat = parseFloat(req.query.lat as string);
+    const lng = parseFloat(req.query.lng as string);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.json({ address: 'กรุงเทพมหานคร, ประเทศไทย' });
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        {
+          headers: {
+            'User-Agent': 'SabaiDeeMassageApp/1.0 (contact: support@sabaidee.app)',
+            'Accept-Language': 'th,en;q=0.8'
+          },
+          signal: controller.signal
+        }
+      );
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.display_name) {
+          return res.json({ address: data.display_name, raw: data });
+        }
+      }
+    } catch (err) {
+      // Fallback cleanly without breaking
+    }
+
+    res.json({ address: `พิกัดละติจูด ${lat.toFixed(5)}, ลองจิจูด ${lng.toFixed(5)}` });
+  });
+
+  app.get('/api/geocode/search', async (req, res) => {
+    const query = (req.query.q as string || '').trim();
+    if (!query) return res.json({ results: [] });
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=th`,
+        {
+          headers: {
+            'User-Agent': 'SabaiDeeMassageApp/1.0 (contact: support@sabaidee.app)',
+            'Accept-Language': 'th,en;q=0.8'
+          },
+          signal: controller.signal
+        }
+      );
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        return res.json({ results: Array.isArray(data) ? data : [] });
+      }
+    } catch (err) {
+      // Fallback
+    }
+
+    res.json({ results: [] });
+  });
+
+  // Users APIs
+  app.get('/api/users', (req, res) => {
+    const db = getDatabase();
+    res.json(db.users);
+  });
+
+  app.put('/api/users/:id', (req, res) => {
+    const db = getDatabase();
+    const user = db.users.find(u => u.UserID === req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    const { name, phone, password, role, profileImage } = req.body;
+    if (name !== undefined) user.Name = name;
+    if (phone !== undefined) user.Phone = phone;
+    if (password) user.PasswordHash = password;
+    if (role && ['Customer', 'Staff', 'Admin'].includes(role)) {
+      user.Role = role;
+    }
+    if (profileImage !== undefined) user.ProfileImage = profileImage;
+    
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Users', user);
+    res.json({ success: true, user });
+  });
+
+  app.put('/api/users/:id/role', (req, res) => {
+    const db = getDatabase();
+    const user = db.users.find(u => u.UserID === req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    const { role } = req.body;
+    if (['Customer', 'Staff', 'Admin'].includes(role)) {
+      user.Role = role as 'Customer' | 'Staff' | 'Admin';
+      
+      // If changed to Staff, ensure staff record exists
+      if (role === 'Staff') {
+        let staff = db.staff.find(s => s.UserID === user.UserID);
+        if (!staff) {
+          const newStaffID = generateId('SFT');
+          staff = {
+            StaffID: newStaffID,
+            UserID: user.UserID,
+            Nickname: user.Name.split(' ')[0],
+            Gender: 'Female',
+            Age: 30,
+            Weight: 50,
+            Height: 160,
+            RegisteredAddress: user.Address,
+            Experience: 1,
+            Description: 'ยินดีให้บริการค่ะ',
+            Rating: 5.0,
+            ReviewCount: 0,
+            Credit: 10000,
+            Available: 'OFF',
+            VerifyStatus: 'Pending',
+            CurrentLatitude: user.Latitude,
+            CurrentLongitude: user.Longitude,
+            LastLocationUpdate: new Date().toISOString(),
+            TotalIncome: 0,
+            TotalJobs: 0,
+            OfferedServices: db.services.map(s => s.ServiceID),
+            MaxJobDistance: 15
+          };
+          db.staff.push(staff);
+          syncToGoogleSheet('INSERT', 'Staff', staff);
+        }
+      }
+      
+      saveDatabase(db);
+      syncToGoogleSheet('UPDATE', 'Users', user);
+      res.json(user);
+    } else {
+      res.status(400).json({ error: 'Invalid role' });
+    }
+  });
+
+  // 2. Services APIs
+  app.get('/api/services', (req, res) => {
+    const db = getDatabase();
+    res.json(db.services);
+  });
+
+  app.post('/api/services', (req, res) => {
+    const db = getDatabase();
+    const { ServiceName, Detail, Duration, Price, CreditRequired, Active, SortOrder } = req.body;
+
+    if (!ServiceName || !Price || !Duration) {
+      return res.status(400).json({ error: 'กรุณากรอกชื่อบริการ ราคา และเวลาในการนวด' });
+    }
+
+    const newService: Service = {
+      ServiceID: generateId('S'),
+      ServiceName,
+      Detail: Detail || '',
+      Duration: parseInt(Duration),
+      Price: parseFloat(Price),
+      CreditRequired: parseFloat(CreditRequired) || Math.floor(Price * 0.15),
+      Active: Active || 'ON',
+      SortOrder: parseInt(SortOrder) || (db.services.length + 1)
+    };
+
+    db.services.push(newService);
+    saveDatabase(db);
+    syncToGoogleSheet('INSERT', 'Services', newService);
+    res.json({ success: true, service: newService });
+  });
+
+  app.put('/api/services/:id', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { ServiceName, Detail, Duration, Price, CreditRequired, Active, SortOrder } = req.body;
+
+    const index = db.services.findIndex(s => s.ServiceID === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'ไม่พบรหัสบริการที่ต้องการแก้ไข' });
+    }
+
+    const service = db.services[index];
+    service.ServiceName = ServiceName || service.ServiceName;
+    service.Detail = Detail !== undefined ? Detail : service.Detail;
+    service.Duration = Duration !== undefined ? parseInt(Duration) : service.Duration;
+    service.Price = Price !== undefined ? parseFloat(Price) : service.Price;
+    service.CreditRequired = CreditRequired !== undefined ? parseFloat(CreditRequired) : service.CreditRequired;
+    service.Active = Active || service.Active;
+    service.SortOrder = SortOrder !== undefined ? parseInt(SortOrder) : service.SortOrder;
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Services', service);
+    res.json({ success: true, service });
+  });
+
+  app.delete('/api/services/:id', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    
+    const index = db.services.findIndex(s => s.ServiceID === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'ไม่พบบริการที่ต้องการลบ' });
+    }
+
+    const deleted = db.services[index];
+    db.services.splice(index, 1);
+    saveDatabase(db);
+    syncToGoogleSheet('DELETE', 'Services', { ServiceID: id, ServiceName: deleted.ServiceName });
+    res.json({ success: true });
+  });
+
+  // 3. Settings APIs
+  app.get('/api/settings', (req, res) => {
+    const db = getDatabase();
+    res.json(db.settings);
+  });
+
+  app.put('/api/settings', (req, res) => {
+    const db = getDatabase();
+    db.settings = { ...db.settings, ...req.body };
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Settings', db.settings);
+    res.json({ success: true, settings: db.settings });
+  });
+
+  // 4. Staff-specific APIs
+  app.get('/api/staff', (req, res) => {
+    const db = getDatabase();
+    
+    // Join User details with Staff details
+    const staffList = db.staff.map(s => {
+      const u = db.users.find(user => user.UserID === s.UserID);
+      return {
+        ...s,
+        Name: u ? u.Name : 'พนักงาน',
+        Phone: u ? u.Phone : '',
+        Email: u ? u.Email : '',
+        ProfileImage: u ? u.ProfileImage : 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=60',
+        Address: u ? u.Address : '',
+        Province: u ? u.Province : '',
+        District: u ? u.District : '',
+        SubDistrict: u ? u.SubDistrict : '',
+        UserStatus: u ? u.Status : 'Active',
+        UserCreatedDate: u ? u.CreatedDate : ''
+      };
+    });
+
+    res.json(staffList);
+  });
+
+  // Get full staff detail (profile, work history, bookings, reviews, credit transactions)
+  app.get('/api/staff/:id/details', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+
+    const staff = db.staff.find(s => s.StaffID === id);
+    if (!staff) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    const u = db.users.find(user => user.UserID === staff.UserID);
+    const enrichedStaff = {
+      ...staff,
+      Name: u ? u.Name : 'พนักงาน',
+      Phone: u ? u.Phone : '',
+      Email: u ? u.Email : '',
+      ProfileImage: u ? u.ProfileImage : 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=60',
+      Address: u ? u.Address : '',
+      Province: u ? u.Province : '',
+      District: u ? u.District : '',
+      SubDistrict: u ? u.SubDistrict : '',
+      UserStatus: u ? u.Status : 'Active',
+      UserCreatedDate: u ? u.CreatedDate : ''
+    };
+
+    // Bookings of this staff
+    const bookings = db.bookings
+      .filter(b => b.StaffID === id)
+      .map(b => {
+        const customer = db.users.find(usr => usr.UserID === b.CustomerID);
+        const service = db.services.find(svc => svc.ServiceID === b.ServiceID);
+        return {
+          ...b,
+          CustomerName: customer ? customer.Name : 'ลูกค้า',
+          CustomerPhone: customer ? customer.Phone : '',
+          ServiceName: service ? service.ServiceName : (b.ServiceID || 'บริการนวด')
+        };
+      })
+      .sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+
+    // Reviews of this staff
+    const reviews = db.reviews
+      .filter(r => r.StaffID === id)
+      .map(r => {
+        const customer = db.users.find(usr => usr.UserID === r.CustomerID);
+        return {
+          ...r,
+          CustomerName: customer ? customer.Name : 'ลูกค้า',
+          CustomerPhone: customer ? customer.Phone : ''
+        };
+      })
+      .sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+
+    // Credit transactions of this staff
+    const transactions = db.transactions
+      .filter(t => t.StaffID === id)
+      .sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+
+    res.json({
+      staff: enrichedStaff,
+      bookings,
+      reviews,
+      transactions,
+      services: db.services
+    });
+  });
+
+  // Admin Direct Adjust Staff Credit
+  app.put('/api/admin/staff/:id/credit', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { amount, type, remark } = req.body; // type: 'Topup' | 'Deduct'
+
+    const staffIndex = db.staff.findIndex(s => s.StaffID === id);
+    if (staffIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    const staff = db.staff[staffIndex];
+    const numAmount = parseFloat(amount) || 0;
+    if (numAmount <= 0) {
+      return res.status(400).json({ error: 'จำนวนเครดิตต้องมากกว่า 0' });
+    }
+
+    const beforeCredit = staff.Credit;
+    const afterCredit = type === 'Topup' ? beforeCredit + numAmount : Math.max(0, beforeCredit - numAmount);
+    staff.Credit = afterCredit;
+
+    const tx = {
+      TransactionID: generateId('TX'),
+      StaffID: staff.StaffID,
+      Amount: numAmount,
+      BeforeCredit: beforeCredit,
+      AfterCredit: afterCredit,
+      Type: type as 'Topup' | 'Deduct',
+      SlipImage: '',
+      Status: 'Approved' as const,
+      AdminRemark: remark || (type === 'Topup' ? 'แอดมินปรับเพิ่มเครดิตโดยตรง' : 'แอดมินปรับลดเครดิตโดยตรง'),
+      CreatedDate: new Date().toISOString()
+    };
+
+    db.transactions.push(tx);
+
+    // Notify staff
+    const notif = {
+      NotificationID: generateId('N'),
+      UserID: staff.UserID,
+      Title: type === 'Topup' ? `🎉 ได้รับเครดิตเพิ่ม +${numAmount} CR` : `⚠️ มีการหักเครดิต -${numAmount} CR`,
+      Detail: `${tx.AdminRemark} (ยอดคงเหลือปัจจุบัน: ${afterCredit.toFixed(0)} CR)`,
+      ReadStatus: 'Unread' as const,
+      CreatedDate: new Date().toISOString()
+    };
+    db.notifications.push(notif);
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Staff', staff);
+    syncToGoogleSheet('INSERT', 'CreditTransaction', tx);
+    syncToGoogleSheet('INSERT', 'Notification', notif);
+    res.json({ success: true, staff, transaction: tx });
+  });
+
+  // Admin Update Staff Profile & Preferences
+  app.put('/api/admin/staff/:id/update', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { 
+      name, phone, email, address, province, district, subDistrict,
+      nickname, gender, age, weight, height, experience, description, 
+      registeredAddress, offeredServices, maxJobDistance, verifyStatus, available, status
+    } = req.body;
+
+    const staffIndex = db.staff.findIndex(s => s.StaffID === id);
+    if (staffIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    const staff = db.staff[staffIndex];
+    if (nickname !== undefined) staff.Nickname = nickname;
+    if (gender !== undefined) staff.Gender = gender;
+    if (age !== undefined) staff.Age = parseInt(age) || staff.Age;
+    if (weight !== undefined) staff.Weight = parseInt(weight) || staff.Weight;
+    if (height !== undefined) staff.Height = parseInt(height) || staff.Height;
+    if (experience !== undefined) staff.Experience = parseInt(experience) || staff.Experience;
+    if (description !== undefined) staff.Description = description;
+    if (registeredAddress !== undefined) staff.RegisteredAddress = registeredAddress;
+    if (offeredServices !== undefined) staff.OfferedServices = offeredServices;
+    if (maxJobDistance !== undefined) staff.MaxJobDistance = parseInt(maxJobDistance) || staff.MaxJobDistance;
+    if (verifyStatus !== undefined) staff.VerifyStatus = verifyStatus;
+    if (available !== undefined) staff.Available = available;
+
+    // Update user record
+    const userIndex = db.users.findIndex(u => u.UserID === staff.UserID);
+    let updatedUser: User | null = null;
+    if (userIndex !== -1) {
+      const user = db.users[userIndex];
+      if (name !== undefined) user.Name = name;
+      if (phone !== undefined) user.Phone = phone;
+      if (email !== undefined) user.Email = email;
+      if (address !== undefined) user.Address = address;
+      if (province !== undefined) user.Province = province;
+      if (district !== undefined) user.District = district;
+      if (subDistrict !== undefined) user.SubDistrict = subDistrict;
+      if (status !== undefined) user.Status = status;
+      updatedUser = user;
+    }
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Staff', staff);
+    if (updatedUser) {
+      syncToGoogleSheet('UPDATE', 'Users', updatedUser);
+    }
+    res.json({ success: true, staff });
+  });
+
+  // Get staff reviews
+  app.get('/api/staff/:id/reviews', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    
+    const staffReviews = db.reviews.filter(r => r.StaffID === id);
+    // join customer name
+    const enrichedReviews = staffReviews.map(r => {
+      const customer = db.users.find(u => u.UserID === r.CustomerID);
+      return {
+        ...r,
+        CustomerName: customer ? customer.Name : 'ลูกค้า'
+      };
+    }).sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+    
+    res.json(enrichedReviews);
+  });
+
+  // Toggle availability (ON/OFF)
+  app.put('/api/staff/availability', (req, res) => {
+    const db = getDatabase();
+    const { staffId, available } = req.body;
+
+    const index = db.staff.findIndex(s => s.StaffID === staffId);
+    if (index === -1) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    db.staff[index].Available = available;
+    db.staff[index].LastLocationUpdate = new Date().toISOString();
+    
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Staff', db.staff[index]);
+    res.json({ success: true, staff: db.staff[index] });
+  });
+
+  // Update Staff Verification Status (Admin operation)
+  app.put('/api/staff/:id/verify', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { status } = req.body; // Approved / Reject / Pending
+
+    const index = db.staff.findIndex(s => s.StaffID === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลพนักงาน' });
+    }
+
+    db.staff[index].VerifyStatus = status;
+
+    // Send notification to staff user
+    const staff = db.staff[index];
+    const notif = {
+      NotificationID: generateId('N'),
+      UserID: staff.UserID,
+      Title: status === 'Approved' ? "🎉 บัญชีผู้ใช้ของคุณได้รับอนุมัติแล้ว!" : "⚠️ บัญชีผู้ใช้ไม่ได้รับการอนุมัติ",
+      Detail: status === 'Approved' 
+        ? "ขณะนี้คุณสามารถเปิดสถานะออนไลน์เพื่อเริ่มรับงานจากลูกค้าได้แล้วค่ะ" 
+        : "กรุณาแก้ไขเอกสารข้อมูลหรือรูปโปรไฟล์ของคุณ หรือติดต่อฝ่ายบริการลูกค้าเพื่อสอบถามเพิ่มเติม",
+      ReadStatus: 'Unread' as const,
+      CreatedDate: new Date().toISOString()
+    };
+    db.notifications.push(notif);
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Staff', db.staff[index]);
+    syncToGoogleSheet('INSERT', 'Notification', notif);
+    res.json({ success: true, staff: db.staff[index] });
+  });
+
+  // Update GPS coordinate for Staff (Runs every 30 seconds if active)
+  app.put('/api/staff/location', (req, res) => {
+    const db = getDatabase();
+    const { staffId, latitude, longitude } = req.body;
+
+    const sIndex = db.staff.findIndex(s => s.StaffID === staffId);
+    if (sIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    db.staff[sIndex].CurrentLatitude = parseFloat(latitude);
+    db.staff[sIndex].CurrentLongitude = parseFloat(longitude);
+    db.staff[sIndex].LastLocationUpdate = new Date().toISOString();
+
+    // Sync to User's main latitude/longitude
+    const uIndex = db.users.findIndex(u => u.UserID === db.staff[sIndex].UserID);
+    if (uIndex !== -1) {
+      db.users[uIndex].Latitude = parseFloat(latitude);
+      db.users[uIndex].Longitude = parseFloat(longitude);
+    }
+
+    saveDatabase(db);
+    res.json({ success: true });
+  });
+
+  // 5. Booking & Matching APIs
+  
+  // Create a Booking
+  app.post('/api/bookings', (req, res) => {
+    const db = getDatabase();
+    const { customerId, serviceId, customerAddress, customerLatitude, customerLongitude, preferredStaffId } = req.body;
+
+    if (!customerId || !serviceId || !customerLatitude || !customerLongitude) {
+      return res.status(400).json({ error: 'กรุณากรอกข้อมูลที่จำเป็นสำหรับการจอง' });
+    }
+
+    const service = db.services.find(s => s.ServiceID === serviceId);
+    if (!service) {
+      return res.status(404).json({ error: 'ไม่พบรหัสบริการที่ระบุ' });
+    }
+
+    const customerUser = db.users.find(u => u.UserID === customerId);
+    if (!customerUser) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้ลูกค้า' });
+    }
+
+    // Simple Haversine distance calculator helper
+    const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+      const R = 6371; // km
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return parseFloat((R * c).toFixed(1));
+    };
+
+    // Calculate distance and travel fee for nearby online approved staff
+    const settings = db.settings;
+    const clientLat = parseFloat(customerLatitude);
+    const clientLng = parseFloat(customerLongitude);
+
+    // Find and sort eligible staff (ON, Approved, Credit >= Service.CreditRequired, within search radius)
+    const eligibleStaff = db.staff
+      .filter(s => {
+        const dist = calculateDistance(clientLat, clientLng, s.CurrentLatitude, s.CurrentLongitude);
+        const offersService = !s.OfferedServices || s.OfferedServices.includes(serviceId);
+        const maxDist = s.MaxJobDistance || settings.searchRadius;
+        return (
+          s.Available === 'ON' &&
+          s.VerifyStatus === 'Approved' &&
+          s.Credit >= service.CreditRequired &&
+          dist <= maxDist &&
+          offersService
+        );
+      })
+      .map(s => {
+        const dist = calculateDistance(clientLat, clientLng, s.CurrentLatitude, s.CurrentLongitude);
+        let travelFee = parseFloat((dist * settings.travelFeePerKm).toFixed(2));
+        
+        if (settings.travelFeeTiers && settings.travelFeeTiers.length > 0) {
+          const sortedTiers = [...settings.travelFeeTiers].sort((a, b) => a.maxKm - b.maxKm);
+          for (const tier of sortedTiers) {
+            if (dist >= tier.minKm && dist <= tier.maxKm) {
+              travelFee = tier.fee;
+              break;
+            }
+          }
+        }
+        
+        return {
+          ...s,
+          dist,
+          travelFee
+        };
+      })
+      .sort((a, b) => a.dist - b.dist); // closest first
+      
+    if (eligibleStaff.length === 0) {
+      return res.status(400).json({ error: 'ขออภัย ไม่มีหมอนวดให้บริการในระยะที่กำหนดจากตำแหน่งของคุณ กรุณาเลือกตำแหน่งอื่นหรือลองใหม่ภายหลังค่ะ' });
+    }
+
+    // If a preferred staff is requested, try to use them first if they are eligible
+    let bestStaff = eligibleStaff[0];
+    if (preferredStaffId) {
+      const preferred = eligibleStaff.find(s => s.StaffID === preferredStaffId);
+      if (preferred) {
+        bestStaff = preferred;
+      }
+    }
+
+    const distanceVal = bestStaff ? bestStaff.dist : 5.0; // default/mock
+    
+    let defaultTravelFee = parseFloat((distanceVal * settings.travelFeePerKm).toFixed(2));
+    if (settings.travelFeeTiers && settings.travelFeeTiers.length > 0) {
+      const sortedTiers = [...settings.travelFeeTiers].sort((a, b) => a.maxKm - b.maxKm);
+      for (const tier of sortedTiers) {
+        if (distanceVal >= tier.minKm && distanceVal <= tier.maxKm) {
+          defaultTravelFee = tier.fee;
+          break;
+        }
+      }
+    }
+    
+    const travelFeeVal = bestStaff ? bestStaff.travelFee : defaultTravelFee;
+    const totalPriceVal = service.Price + travelFeeVal;
+
+    const newBookingID = generateId('B');
+    const newBooking: Booking & { offeredQueue?: string[], currentOfferIndex?: number, offerExpireTime?: string } = {
+      BookingID: newBookingID,
+      CustomerID: customerId,
+      StaffID: bestStaff ? bestStaff.StaffID : 'none', // auto-assign closest or set 'none'
+      BookingDate: new Date().toISOString().split('T')[0],
+      BookingTime: new Date().toTimeString().split(' ')[0].substring(0, 5),
+      ServiceID: serviceId,
+      ServicePrice: service.Price,
+      Distance: distanceVal,
+      TravelFee: travelFeeVal,
+      TotalPrice: totalPriceVal,
+      CustomerLatitude: clientLat,
+      CustomerLongitude: clientLng,
+      CustomerAddress: customerAddress || customerUser.Address,
+      Status: bestStaff ? 'Waiting' : 'Cancel', // Cancel directly if no staff online
+      PaymentStatus: 'Unpaid',
+      CreatedDate: new Date().toISOString()
+    };
+
+    // Store queue details on backend for matching logic simulation
+    if (eligibleStaff.length > 0) {
+      if (preferredStaffId && eligibleStaff.some(s => s.StaffID === preferredStaffId)) {
+        // Re-arrange offeredQueue so preferred staff is at index 0
+        const rest = eligibleStaff.filter(s => s.StaffID !== preferredStaffId);
+        newBooking.offeredQueue = [preferredStaffId, ...rest.map(r => r.StaffID)];
+      } else {
+        newBooking.offeredQueue = eligibleStaff.map(s => s.StaffID);
+      }
+      newBooking.currentOfferIndex = 0;
+      // 30 seconds offer expiration
+      newBooking.offerExpireTime = new Date(Date.now() + 30 * 1000).toISOString();
+
+      // Notify the offered staff
+      const selectedStaff = bestStaff;
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: selectedStaff.UserID,
+        Title: "🔔 มีงานนวดใหม่เรียกใช้คุณ!",
+        Detail: `คุณได้รับการเรียกงานนวดบริการ ${service.ServiceName} ระยะทาง ${distanceVal} กม. รายได้รวม ${totalPriceVal} บาท กรุณาตอบรับภายใน 30 วินาที`,
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+    }
+
+    sendLineNotification(`🛎️ มีออเดอร์ใหม่เข้ามา!\nรหัสการจอง: ${newBooking.BookingID}\nบริการ: ${service.ServiceName}\nยอดรวม: ${totalPriceVal} บาท\nลูกค้า: ${customerUser.Name}`);
+    db.bookings.push(newBooking as Booking);
+    saveDatabase(db);
+    syncToGoogleSheet('INSERT', 'Booking', newBooking);
+
+    res.json({ 
+      success: true, 
+      booking: newBooking, 
+      matchedStaff: bestStaff || null,
+      availableCount: eligibleStaff.length 
+    });
+  });
+
+  // Get Bookings list
+  app.get('/api/bookings', (req, res) => {
+    const db = getDatabase();
+    
+    // Rich payload joining Customer, Staff, and Service info
+    const joinedBookings = db.bookings.map(b => {
+      const customer = db.users.find(u => u.UserID === b.CustomerID);
+      const staff = db.staff.find(s => s.StaffID === b.StaffID);
+      const staffUser = staff ? db.users.find(u => u.UserID === staff.UserID) : null;
+      const service = db.services.find(s => s.ServiceID === b.ServiceID);
+      const review = db.reviews.find(r => r.BookingID === b.BookingID);
+
+      return {
+        ...b,
+        CustomerName: customer ? customer.Name : 'ลูกค้า',
+        CustomerPhone: customer ? customer.Phone : '',
+        CustomerProfileImage: customer ? customer.ProfileImage : '',
+        StaffNickname: staff ? staff.Nickname : '',
+        StaffPhone: staffUser ? staffUser.Phone : '',
+        StaffProfileImage: staffUser ? staffUser.ProfileImage : '',
+        ServiceName: service ? service.ServiceName : 'บริการนวด',
+        ServiceDuration: service ? service.Duration : 60,
+        CreditRequired: service ? service.CreditRequired : 0,
+        NetIncome: Math.max(0, b.ServicePrice - (service ? service.CreditRequired : 0)) + b.TravelFee,
+        ReviewScore: review ? review.Score : null,
+        ReviewComment: review ? review.Comment : null
+      };
+    });
+
+    res.json(joinedBookings);
+  });
+
+  // Simulated Polling API that checks expired offer timers and routes them to the next staff automatically!
+  app.get('/api/bookings/match-updates', (req, res) => {
+    const db = getDatabase();
+    let updated = false;
+    const now = new Date();
+
+    db.bookings.forEach((b: any) => {
+      if (b.Status === 'Waiting' && b.offeredQueue && b.offerExpireTime) {
+        const expireTime = new Date(b.offerExpireTime);
+        if (now > expireTime) {
+          // Time expired! Route to next staff
+          b.currentOfferIndex = (b.currentOfferIndex || 0) + 1;
+          
+          if (b.currentOfferIndex < b.offeredQueue.length) {
+            // Move to next staff in queue
+            const nextStaffId = b.offeredQueue[b.currentOfferIndex];
+            const prevStaffId = b.StaffID;
+            b.StaffID = nextStaffId;
+            b.offerExpireTime = new Date(Date.now() + 30 * 1000).toISOString();
+            updated = true;
+
+            const staffObj = db.staff.find(s => s.StaffID === nextStaffId);
+            const prevStaffObj = db.staff.find(s => s.StaffID === prevStaffId);
+            const svc = db.services.find(s => s.ServiceID === b.ServiceID);
+
+            if (staffObj) {
+              const notifNext = {
+                NotificationID: generateId('N'),
+                UserID: staffObj.UserID,
+                Title: "🔔 ได้รับข้อเสนองานใหม่ (ส่งต่อ)",
+                Detail: `งานบริการ ${svc?.ServiceName || 'นวด'} ถูกส่งต่อมายังคุณเนื่องจากพนักงานก่อนหน้าหมดเวลารับสาย กรุณาตอบรับค่ะ`,
+                ReadStatus: 'Unread' as const,
+                CreatedDate: new Date().toISOString()
+              };
+              db.notifications.push(notifNext);
+              syncToGoogleSheet('INSERT', 'Notification', notifNext);
+            }
+
+            if (prevStaffObj) {
+              const notifPrev = {
+                NotificationID: generateId('N'),
+                UserID: prevStaffObj.UserID,
+                Title: "⚠️ พลาดงานเรียก",
+                Detail: `คุณไม่ได้ตอบรับงานจอง #${b.BookingID} ภายในเวลาที่กำหนด ระบบจึงส่งงานให้พนักงานถัดไป`,
+                ReadStatus: 'Unread' as const,
+                CreatedDate: new Date().toISOString()
+              };
+              db.notifications.push(notifPrev);
+              syncToGoogleSheet('INSERT', 'Notification', notifPrev);
+            }
+          } else {
+            // End of queue! Cancel the booking automatically
+            b.Status = 'Cancel';
+            b.StaffID = 'none';
+            updated = true;
+
+            // Notify Customer
+            const notifCust = {
+              NotificationID: generateId('N'),
+              UserID: b.CustomerID,
+              Title: "❌ ไม่มีพนักงานตอบรับงานจอง",
+              Detail: "ขณะนี้พนักงานนวดในเขตบริการของคุณยังไม่สะดวกรับงาน กรุณาลองใหม่อีกครั้งในภายหลังค่ะ",
+              ReadStatus: 'Unread' as const,
+              CreatedDate: new Date().toISOString()
+            };
+            db.notifications.push(notifCust);
+            syncToGoogleSheet('INSERT', 'Notification', notifCust);
+          }
+          syncToGoogleSheet('UPDATE', 'Booking', b);
+        }
+      }
+    });
+
+    if (updated) {
+      saveDatabase(db);
+    }
+
+    res.json({ success: true, updated });
+  });
+
+  // Action on booking: Accept, Travel, Work, Complete, Cancel
+  app.put('/api/bookings/:id/action', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { action, staffId } = req.body; // accept, start_travel, start_work, complete, cancel
+
+    const index = db.bookings.findIndex(b => b.BookingID === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'ไม่พบงานจองนี้ในระบบ' });
+    }
+
+    const booking = db.bookings[index];
+    const customerUser = db.users.find(u => u.UserID === booking.CustomerID);
+    const service = db.services.find(s => s.ServiceID === booking.ServiceID);
+
+    if (action === 'reject') {
+      booking.Status = 'Cancel';
+      booking.CancellationReason = 'พนักงานปฏิเสธการรับงาน';
+      booking.StaffID = 'none';
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "❌ พนักงานปฏิเสธรับงาน",
+          Detail: "ขออภัยค่ะ พนักงานไม่สะดวกรับงานในขณะนี้ ระบบได้ทำการยกเลิกการจองให้ท่านแล้ว",
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+      saveDatabase(db);
+      syncToGoogleSheet('UPDATE', 'Booking', booking);
+      return res.json({ message: 'Rejected' });
+    }
+
+    if (action === 'accept') {
+      const staff = db.staff.find(s => s.StaffID === staffId);
+      if (!staff) return res.status(404).json({ error: 'ไม่พบพนักงานผู้ให้บริการ' });
+      if (!service) return res.status(404).json({ error: 'ไม่พบข้อมูลบริการ' });
+
+      // Double-check credit requirements
+      if (staff.Credit < service.CreditRequired) {
+        return res.status(400).json({ error: `เครดิตของคุณ (${staff.Credit} CR) ต่ำกว่าขั้นต่ำที่บริการนี้กำหนดไว้ (${service.CreditRequired} CR) กรุณาเติมเครดิตก่อนรับงาน` });
+      }
+
+      // Accept Job
+      booking.StaffID = staffId;
+      booking.Status = 'Accepted';
+      
+      // Deduct credit immediately on acceptance
+      staff.Credit -= service.CreditRequired;
+      staff.TotalJobs += 1;
+      
+      sendLineNotification(`👍 พนักงานรับงานแล้ว!\nรหัสการจอง: ${booking.BookingID}\nพนักงาน: ${staff.Nickname}`);
+
+      // Add Credit Transaction entry
+      const tx = {
+        TransactionID: generateId('TX'),
+        StaffID: staffId,
+        Amount: service.CreditRequired,
+        BeforeCredit: staff.Credit + service.CreditRequired,
+        AfterCredit: staff.Credit,
+        Type: 'Deduct' as const,
+        SlipImage: '',
+        Status: 'Approved' as const,
+        AdminRemark: `หักค่าคอมมิชชันล่วงหน้าสำหรับ Booking #${id}`,
+        CreatedDate: new Date().toISOString()
+      };
+      db.transactions.push(tx);
+      syncToGoogleSheet('INSERT', 'CreditTransaction', tx);
+      syncToGoogleSheet('UPDATE', 'Staff', staff);
+
+      // Notify customer
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "🟢 พนักงานตอบรับงานของคุณแล้ว!",
+          Detail: `พี่ ${staff.Nickname} ได้รับงานของคุณแล้ว กำลังจัดเตรียมอุปกรณ์เพื่อเดินทางไปให้บริการ`,
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+    } 
+    else if (action === 'start_travel') {
+      const currentStaff = db.staff.find(s => s.StaffID === booking.StaffID);
+      const staffName = currentStaff ? currentStaff.Nickname : 'พนักงาน';
+      sendLineNotification(`🛵 พนักงานกำลังเดินทาง!\nรหัสการจอง: ${booking.BookingID}\nพนักงาน: พี่${staffName}\nระยะทาง: ${booking.Distance} กม.`);
+      booking.Status = 'Working';
+
+      // Notify customer
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "🛵 พนักงานกำลังเดินทางมาหาคุณ",
+          Detail: `พี่พนักงานกำลังเดินทางไปยังที่อยู่ของคุณ ระยะทางประมาณ ${booking.Distance} กม.`,
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+    } 
+    else if (action === 'start_work') {
+      const currentStaff = db.staff.find(s => s.StaffID === booking.StaffID);
+      const staffName = currentStaff ? currentStaff.Nickname : 'พนักงาน';
+      sendLineNotification(`📍 พนักงานเดินทางถึงและเริ่มให้บริการแล้ว!\nรหัสการจอง: ${booking.BookingID}\nพนักงาน: พี่${staffName}`);
+      
+      // Notify customer
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "💆 เริ่มต้นให้บริการนวดแล้ว",
+          Detail: "พนักงานเริ่มจับเวลาให้บริการนวดแก่คุณแล้ว ขอให้มีความสุขกับการผ่อนคลายนะคะ",
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+    } 
+    else if (action === 'complete') {
+      const currentStaff = db.staff.find(s => s.StaffID === booking.StaffID);
+      const staffName = currentStaff ? currentStaff.Nickname : 'พนักงาน';
+      sendLineNotification(`✅ งานเสร็จสิ้นแล้ว!\nรหัสการจอง: ${booking.BookingID}\nพนักงาน: พี่${staffName}\nยอดรวม: ${booking.ServicePrice + booking.TravelFee} บาท`);
+      booking.Status = 'Completed';
+      booking.PaymentStatus = 'Paid';
+
+      // Distribute income to staff
+      const staff = db.staff.find(s => s.StaffID === booking.StaffID);
+      const service = db.services.find(s => s.ServiceID === booking.ServiceID);
+      if (staff) {
+        const creditRequired = service ? service.CreditRequired : 0;
+        const staffEarning = Math.max(0, booking.ServicePrice - creditRequired) + booking.TravelFee;
+        staff.TotalIncome += staffEarning;
+        syncToGoogleSheet('UPDATE', 'Staff', staff);
+      }
+
+      // Notify customer
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "✅ การให้บริการเสร็จสิ้นแล้ว",
+          Detail: "ขอบคุณที่ใช้บริการ SabaiDee Massage ค่ะ กรุณาให้คะแนนรีวิวเพื่อเป็นกำลังใจและพัฒนาคุณภาพต่อไป",
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+    } 
+    else if (action === 'cancel') {
+      const prevStatus = booking.Status;
+      booking.Status = 'Cancel';
+
+      // Refund credit if booking was already accepted and then canceled
+      if (prevStatus === 'Accepted' || prevStatus === 'Working') {
+        const staff = db.staff.find(s => s.StaffID === booking.StaffID);
+        if (staff && service) {
+          staff.Credit += service.CreditRequired;
+          staff.TotalJobs = Math.max(0, staff.TotalJobs - 1);
+
+          const tx = {
+            TransactionID: generateId('TX'),
+            StaffID: booking.StaffID,
+            Amount: service.CreditRequired,
+            BeforeCredit: staff.Credit - service.CreditRequired,
+            AfterCredit: staff.Credit,
+            Type: 'Topup' as const,
+            SlipImage: '',
+            Status: 'Approved' as const,
+            AdminRemark: `คืนเงินค่าคอมมิชชันเนื่องจากยกเลิก Booking #${id}`,
+            CreatedDate: new Date().toISOString()
+          };
+          db.transactions.push(tx);
+          syncToGoogleSheet('INSERT', 'CreditTransaction', tx);
+          syncToGoogleSheet('UPDATE', 'Staff', staff);
+        }
+      }
+
+      // Notify stakeholders
+      if (customerUser) {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: customerUser.UserID,
+          Title: "⚠️ งานจองของคุณถูกยกเลิกแล้ว",
+          Detail: `รายการจอง #${id} ได้รับการยกเลิกเรียบร้อยแล้ว`,
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      }
+
+      if (booking.StaffID !== 'none') {
+        const staffObj = db.staff.find(s => s.StaffID === booking.StaffID);
+        if (staffObj) {
+          const notif = {
+            NotificationID: generateId('N'),
+            UserID: staffObj.UserID,
+            Title: "⚠️ งานถูกยกเลิกโดยลูกค้า",
+            Detail: `ลูกค้าได้ยกเลิกรายการจอง #${id} แล้ว เครดิตค่าธรรมเนียมถูกโอนคืนเต็มจำนวน`,
+            ReadStatus: 'Unread' as const,
+            CreatedDate: new Date().toISOString()
+          };
+          db.notifications.push(notif);
+          syncToGoogleSheet('INSERT', 'Notification', notif);
+        }
+      }
+    }
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'Booking', booking);
+    res.json({ success: true, booking });
+  });
+
+  // 6. Credit Transaction & Topup APIs
+  app.get('/api/credits/transactions', (req, res) => {
+    const db = getDatabase();
+    const joinedTransactions = db.transactions.map(t => {
+      const staff = db.staff.find(s => s.StaffID === t.StaffID);
+      const user = staff ? db.users.find(u => u.UserID === staff.UserID) : null;
+      return {
+        ...t,
+        StaffNickname: staff ? staff.Nickname : 'พนักงาน',
+        StaffFullName: user ? user.Name : '',
+        StaffPhone: user ? user.Phone : ''
+      };
+    }).sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+
+    res.json(joinedTransactions);
+  });
+
+  app.post('/api/credits/topup', async (req, res) => {
+    const db = getDatabase();
+    const { staffId, amount, slipImage } = req.body;
+
+    if (!staffId || !amount || !slipImage) {
+      return res.status(400).json({ error: 'กรุณากรอกจำนวนเงินและแนบหลักฐานสลิปการโอนเงิน' });
+    }
+
+    const staff = db.staff.find(s => s.StaffID === staffId);
+    if (!staff) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานในระบบ' });
+    }
+
+    const requestedAmount = parseFloat(amount);
+    if (isNaN(requestedAmount) || requestedAmount <= 0) {
+      return res.status(400).json({ error: 'จำนวนเงินที่ระบุไม่ถูกต้อง' });
+    }
+
+    // Step 1: Pre-check duplicate image payload against existing transactions
+    const duplicateByExactImage = db.transactions.find(
+      t => t.Type === 'Topup' && t.SlipImage && t.SlipImage === slipImage && t.Status !== 'Reject'
+    );
+
+    const newTx: CreditTransaction = {
+      TransactionID: generateId('TX'),
+      StaffID: staffId,
+      Amount: requestedAmount,
+      BeforeCredit: staff.Credit,
+      AfterCredit: staff.Credit,
+      Type: 'Topup',
+      SlipImage: slipImage,
+      Status: 'Pending',
+      AdminRemark: '',
+      CreatedDate: new Date().toISOString(),
+      IsAutoApproved: false
+    };
+
+    if (duplicateByExactImage) {
+      newTx.Status = 'Reject';
+      newTx.AdminRemark = `⚠️ ตรวจพบสลิปซ้ำ: รูปภาพสลิปนี้เคยถูกนำมาใช้งานในรายการ ${duplicateByExactImage.TransactionID} แล้ว`;
+      newTx.SlipVerificationDetail = 'ตรวจพบรูปภาพสลิปซ้ำกับประวัติในระบบ 100%';
+      db.transactions.push(newTx);
+      saveDatabase(db);
+      return res.json({
+        success: false,
+        transaction: newTx,
+        error: 'ตรวจพบสลิปซ้ำ: รูปสลิปนี้เคยถูกนำมาใช้เติมเครดิตในระบบแล้ว กรุณาใช้สลิปการโอนเงินที่ถูกต้อง'
+      });
+    }
+
+    // Step 2: Auto verification using Gemini 3.7 Flash
+    let autoApproved = false;
+    const ai = getAi();
+    if (ai) {
+      try {
+        const match = slipImage.match(/^data:(image\/[a-zA-Z0-9+.-]*);base64,(.*)$/);
+        if (match) {
+          const mimeType = match[1];
+          const base64Data = match[2];
+
+          const response = await ai.models.generateContent({
+            model: "gemini-3.7-flash",
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: mimeType,
+                    data: base64Data
+                  }
+                },
+                {
+                  text: `Analyze this Thai bank transfer slip image thoroughly for payment verification and anti-fraud detection.
+Check the following:
+1. Is it a genuine official Thai bank transfer slip (e.g. SCB, KBANK, KTB, BBL, TTB, GSB, BAY, PromptPay)?
+2. Are there any signs of Photoshop/editing, fake slip generator artifacts, mismatched fonts, tampered amounts, or fake transaction details?
+3. Extract the Transaction Reference Number / Ref ID (เลขที่อ้างอิง/รหัสอ้างอิงธุรกรรม).
+4. Extract the exact transfer amount in Thai Baht (ตัวเลขจำนวนเงินที่โอน).
+5. Extract the bank name, sender name, receiver name/account, and date/time of transfer.
+
+Return strict JSON matching the schema.`
+                }
+              ]
+            },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  isValidSlip: { type: Type.BOOLEAN, description: "True if image is a genuine official bank transfer slip" },
+                  isTamperedOrFake: { type: Type.BOOLEAN, description: "True if detected fake slip, photoshop editing, or font manipulation" },
+                  amount: { type: Type.NUMBER, description: "The transfer amount extracted from the slip" },
+                  refNo: { type: Type.STRING, description: "The unique transaction reference number or slip ID (e.g. 20240818xxxx)" },
+                  bankName: { type: Type.STRING, description: "Bank name (e.g. KBANK, SCB, KTB, BBL, PromptPay)" },
+                  receiver: { type: Type.STRING, description: "Receiver name or account number on slip" },
+                  sender: { type: Type.STRING, description: "Sender name or account on slip" },
+                  transferDateTime: { type: Type.STRING, description: "Date and time of transfer extracted from slip" },
+                  confidence: { type: Type.NUMBER, description: "Confidence score 0-100" },
+                  reason: { type: Type.STRING, description: "Detailed explanation in Thai of the verification decision" }
+                },
+                required: ["isValidSlip", "isTamperedOrFake", "amount", "refNo", "bankName", "reason"]
+              }
+            }
+          });
+
+          const text = response.text;
+          if (text) {
+            const result = JSON.parse(text);
+            const cleanRefNo = (result.refNo || '').trim().replace(/[\s-]/g, '');
+
+            newTx.SlipRefId = cleanRefNo || undefined;
+            newTx.BankName = result.bankName || undefined;
+
+            // Step 3: Check duplicate transaction reference ID across database
+            let isDuplicateRef = false;
+            if (cleanRefNo && cleanRefNo.length >= 6) {
+              const existingTxWithRef = db.transactions.find(
+                t => t.Type === 'Topup' &&
+                     t.SlipRefId &&
+                     t.SlipRefId.replace(/[\s-]/g, '') === cleanRefNo &&
+                     t.Status !== 'Reject'
+              );
+              if (existingTxWithRef) {
+                isDuplicateRef = true;
+                newTx.Status = 'Reject';
+                newTx.AdminRemark = `⚠️ ปฏิเสธสลิปซ้ำ: เลขที่อ้างอิงธุรกรรม (${cleanRefNo}) เคยถูกใช้เติมเครดิตในรายการ ${existingTxWithRef.TransactionID} ไปแล้ว`;
+                newTx.SlipVerificationDetail = `สลิปซ้ำ! รหัสอ้างอิง: ${cleanRefNo} ซ้ำกับรายการเดิม`;
+              }
+            }
+
+            if (!isDuplicateRef) {
+              if (result.isTamperedOrFake || !result.isValidSlip) {
+                newTx.Status = 'Reject';
+                newTx.AdminRemark = `❌ ตรวจพบความผิดปกติ: ${result.reason || 'รูปภาพไม่ใช่สลิปโอนเงินที่ถูกต้องหรือมีความเสี่ยงเป็นสลิปปลอม'}`;
+                newTx.SlipVerificationDetail = `ไม่ผ่านการตรวจจับความถูกต้อง (Fake/Tampered): ${result.reason}`;
+              } else if (result.amount < requestedAmount) {
+                newTx.Status = 'Pending';
+                newTx.AdminRemark = `⚠️ ยอดเงินในสลิป (${result.amount} บาท) น้อยกว่ายอดที่ระบุขอเติม (${requestedAmount} บาท) รอแอดมินตรวจสอบ`;
+                newTx.SlipVerificationDetail = `ยอดในสลิป: ฿${result.amount} (น้อยกว่าที่แจ้ง ฿${requestedAmount})`;
+              } else {
+                // All verification checks passed! Real slip, correct amount, not duplicate -> Auto Approve!
+                autoApproved = true;
+                newTx.Status = 'Approved';
+                newTx.IsAutoApproved = true;
+                newTx.AfterCredit = staff.Credit + newTx.Amount;
+                staff.Credit = newTx.AfterCredit;
+                newTx.AdminRemark = `✅ อนุมัติและเติมเครดิตอัตโนมัติด้วย AI (${result.bankName || 'ธนาคาร'}, รหัสอ้างอิง: ${cleanRefNo || 'N/A'}, ยอด: ฿${result.amount})`;
+                newTx.SlipVerificationDetail = `ผ่านการตรวจสอบอัตโนมัติ 100% (Ref: ${cleanRefNo}, ${result.bankName}, ฿${result.amount})`;
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        console.error("AI Slip Verification Error:", err);
+        newTx.AdminRemark = "AI ระบบไม่สามารถอ่านสลิปได้อัตโนมัติ ส่งให้แอดมินตรวจสอบ";
+      }
+    }
+
+    db.transactions.push(newTx);
+    syncToGoogleSheet('INSERT', 'CreditTransaction', newTx);
+    if (autoApproved) {
+      syncToGoogleSheet('UPDATE', 'Staff', staff);
+    }
+
+    if (autoApproved) {
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: staff.UserID,
+        Title: "✅ เติมเครดิตอัตโนมัติสำเร็จ!",
+        Detail: `ระบบตรวจสลิปผ่าน AI สมบูรณ์และเติมเครดิต +${amount} CR เข้ากระเป๋าของคุณแล้ว (เครดิตคงเหลือ: ${staff.Credit} CR)`,
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+    } else if (newTx.Status === 'Reject') {
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: staff.UserID,
+        Title: "❌ การเติมเครดิตไม่สำเร็จ",
+        Detail: newTx.AdminRemark || 'สลิปไม่ผ่านการตรวจสอบ กรุณาตรวจสอบสลิปและลองใหม่อีกครั้ง',
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+    } else {
+      // Notify Admins for pending
+      db.users.filter(u => u.Role === 'Admin').forEach(admin => {
+        const notif = {
+          NotificationID: generateId('N'),
+          UserID: admin.UserID,
+          Title: "💰 มีรายการเติมเครดิตใหม่รออนุมัติ",
+          Detail: `พนักงาน พี่${staff.Nickname} ได้ทำเรื่องเติมเครดิตจำนวน ${amount} บาท พร้อมแนบหลักฐานการโอน`,
+          ReadStatus: 'Unread' as const,
+          CreatedDate: new Date().toISOString()
+        };
+        db.notifications.push(notif);
+        syncToGoogleSheet('INSERT', 'Notification', notif);
+      });
+    }
+
+    sendLineNotification(`💰 มีแจ้งเติมเงินใหม่!\nพนักงาน: พี่${staff.Nickname}\nจำนวน: ${amount} บาท\nสถานะ: ${newTx.Status} ${autoApproved ? '(อนุมัติอัตโนมัติ AI)' : ''}`);
+    saveDatabase(db);
+    res.json({ success: true, transaction: newTx, autoApproved, newCredit: staff.Credit });
+  });
+
+  // Action on Topup Transaction (Approve / Reject) (Admin operation)
+  app.put('/api/credits/transactions/:id/action', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { status, remark } = req.body; // Approved / Reject
+
+    const txIndex = db.transactions.findIndex(t => t.TransactionID === id);
+    if (txIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบรายการโอนเงินนี้' });
+    }
+
+    const tx = db.transactions[txIndex];
+    if (tx.Status !== 'Pending') {
+      return res.status(400).json({ error: 'รายการนี้ได้รับการดำเนินการไปแล้ว' });
+    }
+
+    const staffIndex = db.staff.findIndex(s => s.StaffID === tx.StaffID);
+    if (staffIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลผู้ให้บริการปลายทาง' });
+    }
+
+    const staff = db.staff[staffIndex];
+    tx.Status = status;
+    tx.AdminRemark = remark || '';
+
+    if (status === 'Approved') {
+      tx.BeforeCredit = staff.Credit;
+      staff.Credit += tx.Amount;
+      tx.AfterCredit = staff.Credit;
+
+      // Notify staff
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: staff.UserID,
+        Title: "✅ เครดิตเติมสำเร็จแล้ว!",
+        Detail: `รายการโอนเงินจำนวน ${tx.Amount} บาท ได้รับการอนุมัติแล้ว เครดิตคงเหลือปัจจุบันคือ ${staff.Credit} CR`,
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+      syncToGoogleSheet('UPDATE', 'Staff', staff);
+    } else {
+      // Notify staff rejection
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: staff.UserID,
+        Title: "⚠️ รายการเติมเครดิตไม่ผ่านการอนุมัติ",
+        Detail: `รายการเติมเงินจำนวน ${tx.Amount} บาท ถูกปฏิเสธเหตุผล: ${remark || 'ข้อมูลสลิปไม่ตรงกัน'} กรุณาติดต่อแอดมิน`,
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+    }
+
+    saveDatabase(db);
+    syncToGoogleSheet('UPDATE', 'CreditTransaction', tx);
+    res.json({ success: true, transaction: tx, staff });
+  });
+
+  // 7. Reviews APIs
+  app.post('/api/reviews', (req, res) => {
+    const db = getDatabase();
+    const { bookingId, customerId, staffId, score, comment } = req.body;
+
+    if (!bookingId || !customerId || !staffId || !score) {
+      return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน คะแนนประเมิน' });
+    }
+
+    const newReview: Review = {
+      ReviewID: generateId('R'),
+      BookingID: bookingId,
+      CustomerID: customerId,
+      StaffID: staffId,
+      Score: parseInt(score),
+      Comment: comment || '',
+      CreatedDate: new Date().toISOString()
+    };
+
+    db.reviews.push(newReview);
+    syncToGoogleSheet('INSERT', 'Reviews', newReview);
+
+    // Recalculate staff ratings
+    const staffIndex = db.staff.findIndex(s => s.StaffID === staffId);
+    if (staffIndex !== -1) {
+      const staffReviews = db.reviews.filter(r => r.StaffID === staffId);
+      const totalScore = staffReviews.reduce((sum, r) => sum + r.Score, 0);
+      db.staff[staffIndex].ReviewCount = staffReviews.length;
+      db.staff[staffIndex].Rating = parseFloat((totalScore / staffReviews.length).toFixed(1));
+      syncToGoogleSheet('UPDATE', 'Staff', db.staff[staffIndex]);
+
+      // Notify staff
+      const notif = {
+        NotificationID: generateId('N'),
+        UserID: db.staff[staffIndex].UserID,
+        Title: "⭐️ คุณได้รับการรีวิวและคะแนนใหม่!",
+        Detail: `มีลูกค้าเขียนรีวิวให้คะแนน ${score} ดาวแก่คุณ: "${comment || 'ไม่มีความคิดเห็นเพิ่มเติม'}"`,
+        ReadStatus: 'Unread' as const,
+        CreatedDate: new Date().toISOString()
+      };
+      db.notifications.push(notif);
+      syncToGoogleSheet('INSERT', 'Notification', notif);
+    }
+
+    saveDatabase(db);
+    res.json({ success: true, review: newReview });
+  });
+
+  app.get('/api/reviews', (req, res) => {
+    const db = getDatabase();
+    const joinedReviews = db.reviews.map(r => {
+      const customer = db.users.find(u => u.UserID === r.CustomerID);
+      const staff = db.staff.find(s => s.StaffID === r.StaffID);
+      return {
+        ...r,
+        CustomerName: customer ? customer.Name : 'ลูกค้า',
+        CustomerProfileImage: customer ? customer.ProfileImage : '',
+        StaffNickname: staff ? staff.Nickname : 'พนักงาน'
+      };
+    }).sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+
+    res.json(joinedReviews);
+  });
+
+  // 8. Notifications APIs
+  app.get('/api/notifications/:userId', (req, res) => {
+    const db = getDatabase();
+    const { userId } = req.params;
+    const notifications = db.notifications
+      .filter(n => n.UserID === userId)
+      .sort((a, b) => new Date(b.CreatedDate).getTime() - new Date(a.CreatedDate).getTime());
+    res.json(notifications);
+  });
+
+  app.put('/api/notifications/:id/read', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const index = db.notifications.findIndex(n => n.NotificationID === id);
+    if (index !== -1) {
+      db.notifications[index].ReadStatus = 'Read';
+      saveDatabase(db);
+      syncToGoogleSheet('UPDATE', 'Notification', db.notifications[index]);
+    }
+    res.json({ success: true });
+  });
+
+  // 9. Admin Dashboard Analytics Stats
+  app.get('/api/admin/dashboard', (req, res) => {
+    const db = getDatabase();
+    
+    const customersCount = db.users.filter(u => u.Role === 'Customer').length;
+    const staffCount = db.staff.length;
+    const totalJobs = db.bookings.length;
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayJobs = db.bookings.filter(b => b.BookingDate === todayStr).length;
+    
+    const totalRevenue = db.bookings
+      .filter(b => b.Status === 'Completed')
+      .reduce((sum, b) => sum + b.TotalPrice, 0);
+
+    const commissionEarnings = db.bookings
+      .filter(b => b.Status === 'Completed')
+      .reduce((sum, b) => {
+        const service = db.services.find(s => s.ServiceID === b.ServiceID);
+        return sum + (service ? service.CreditRequired : 0);
+      }, 0);
+
+    const totalSystemCredits = db.staff.reduce((sum, s) => sum + s.Credit, 0);
+
+    // Sales by day (past 7 days)
+    const salesByDay: Record<string, number> = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      salesByDay[dateStr] = 0;
+    }
+    db.bookings
+      .filter(b => b.Status === 'Completed' && salesByDay[b.BookingDate] !== undefined)
+      .forEach(b => {
+        salesByDay[b.BookingDate] += b.TotalPrice;
+      });
+
+    // Sales by month (all time grouped by YYYY-MM)
+    const salesByMonth = {};
+    db.bookings
+      .filter(b => b.Status === 'Completed')
+      .forEach(b => {
+        const monthStr = b.BookingDate.substring(0, 7);
+        salesByMonth[monthStr] = (salesByMonth[monthStr] || 0) + b.TotalPrice;
+      });
+
+    // Top staff
+    const topStaff = db.staff
+      .map(s => {
+        const u = db.users.find(user => user.UserID === s.UserID);
+        return {
+          Nickname: s.Nickname,
+          FullName: u ? u.Name : '',
+          TotalIncome: s.TotalIncome,
+          TotalJobs: s.TotalJobs,
+          Rating: s.Rating
+        };
+      })
+      .sort((a, b) => b.TotalIncome - a.TotalIncome)
+      .slice(0, 5);
+
+    res.json({
+      customersCount,
+      staffCount,
+      totalJobs,
+      todayJobs,
+      totalRevenue,
+      commissionEarnings,
+      totalSystemCredits,
+      salesByDay,
+      salesByMonth,
+      topStaff
+    });
+  });
+
+  // Direct Mock Database Export / Spreadsheet Edit API (Google Sheets simulator)
+  app.get('/api/database/export', (req, res) => {
+    res.json(getDatabase());
+  });
+
+  app.post('/api/database/import', (req, res) => {
+    const { table, data } = req.body;
+    const db = getDatabase();
+    if (db[table as keyof DatabaseSchema]) {
+      (db as any)[table] = data;
+      saveDatabase(db);
+      return res.json({ success: true });
+    }
+    res.status(400).json({ error: 'ไม่พบตารางข้อมูลที่ระบุ' });
+  });
+
+  // Google Sheets Full Synchronization Webhook API
+  app.post('/api/sync/googlesheets', async (req, res) => {
+    const db = getDatabase();
+    const webhookUrl = req.body?.webhookUrl || db.settings?.googleSheetWebhookUrl;
+
+    if (!webhookUrl || !webhookUrl.startsWith('http')) {
+      return res.status(400).json({ 
+        error: 'กรุณาระบุ URL ของ Google Apps Script Web App เพื่อซิงค์ข้อมูลเข้า Google Sheets' 
+      });
+    }
+
+    try {
+      const payload = {
+        action: 'SYNC_ALL_DATA',
+        timestamp: new Date().toISOString(),
+        tables: {
+          Users: db.users,
+          Staff: db.staff,
+          Services: db.services,
+          Booking: db.bookings,
+          CreditTransaction: db.transactions,
+          Reviews: db.reviews,
+          Notification: db.notifications,
+          Settings: [db.settings]
+        }
+      };
+
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Google Apps Script ส่งสถานะตอบกลับ: ${response.status}`);
+      }
+
+      // Save webhook url if provided
+      if (req.body?.webhookUrl && req.body.webhookUrl !== db.settings.googleSheetWebhookUrl) {
+        db.settings.googleSheetWebhookUrl = req.body.webhookUrl;
+        saveDatabase(db);
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'ซิงค์ข้อมูลทั้งหมด 8 ตารางเข้า Google Sheets สำเร็จเรียบร้อยแล้ว!' 
+      });
+    } catch (err: any) {
+      console.error('Failed to push to Google Apps Script:', err);
+      res.status(500).json({ 
+        error: `ส่งข้อมูลเข้า Google Sheets ไม่สำเร็จ: ${err.message}` 
+      });
+    }
+  });
+
+  // Test LINE Push Notification to Admin (Verify that only Admin receives message)
+  app.post('/api/admin/test-line-notification', async (req, res) => {
+    const db = getDatabase();
+    const token = (req.body?.token || process.env.LINE_CHANNEL_ACCESS_TOKEN || db.settings?.lineChannelAccessToken || '').trim();
+    const adminId = (req.body?.adminId || process.env.LINE_ADMIN_USER_ID || db.settings?.lineAdminUserId || '').trim();
+
+    if (!token || !adminId) {
+      return res.status(400).json({ 
+        error: 'กรุณาระบุทั้ง Channel Access Token และ Admin User ID / Group ID' 
+      });
+    }
+
+    try {
+      const testMsg = `🔔 [ทดสอบแจ้งเตือนเฉพาะแอดมิน]\nระบบ SabaiDee Massage ทดสอบส่งข้อความ\nส่งถึงเฉพาะ: ${adminId}\nลูกค้าทั่วไปจะไม่เห็นข้อความนี้แน่นอนค่ะ\nเวลา: ${new Date().toLocaleTimeString('th-TH')}`;
+      const response = await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          to: adminId,
+          messages: [{ type: 'text', text: testMsg }]
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: response.statusText }));
+        return res.status(response.status).json({ 
+          error: `LINE API Error (${response.status}): ${errorData.message || JSON.stringify(errorData)}` 
+        });
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'ส่งข้อความทดสอบเข้า LINE แอดมินสำเร็จแล้ว! (ลูกค้าไม่เห็นข้อความนี้)' 
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: `เกิดข้อผิดพลาดในการส่ง LINE: ${err.message}` });
+    }
+  });
+
+  // --- End of API Routes ---
+
+  // Vite integration
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Express custom server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer().catch(err => {
+  console.error("Failed to start server", err);
+});
