@@ -30,6 +30,7 @@ export default function StaffPanel({
 
   // UI state controllers
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'credit' | 'profile'>('dashboard');
+  const [isUpdatingGPS, setIsUpdatingGPS] = useState(false);
   
   // Database states
   const [bookings, setBookings] = useState<any[]>([]);
@@ -222,13 +223,73 @@ export default function StaffPanel({
       onUpdateStaffData({ ...staff, Available: nextStatus });
       onShowToast(
         nextStatus === 'ON' 
-          ? "🟢 เข้าสู่โหมดออนไลน์! ระบบ GPS เริ่มตรวจจับพิกัดเพื่อรับงานรอบตัวคุณแล้ว" 
+          ? "🟢 เข้าสู่โหมดออนไลน์! ระบบเปิดพิกัดเพื่อรับงานรอบตัวคุณแล้ว ลูกค้ามองเห็นคุณบนแผนที่" 
           : "🔴 ปิดรับงานสำเร็จ พักผ่อนให้เต็มที่นะคะ", 
         "info"
       );
+      
+      // If switched ON, immediately trigger location update
+      if (nextStatus === 'ON' && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            fetch('/api/staff/location', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                staffId: staff.StaffID,
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude
+              })
+            }).then(() => {
+              onUpdateStaffData({ ...staff, Available: 'ON', CurrentLatitude: pos.coords.latitude, CurrentLongitude: pos.coords.longitude });
+            }).catch(console.error);
+          },
+          () => {},
+          { enableHighAccuracy: true }
+        );
+      }
     } catch (e: any) {
       onShowToast(e.message, "error");
     }
+  };
+
+  // Manual GPS update trigger
+  const handleManualGPSUpdate = () => {
+    if (!navigator.geolocation) {
+      onShowToast("เบราว์เซอร์ไม่รองรับ Geolocation GPS", "error");
+      return;
+    }
+    setIsUpdatingGPS(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const res = await fetch('/api/staff/location', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              staffId: staff.StaffID,
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude
+            })
+          });
+          if (res.ok) {
+            onUpdateStaffData({ ...staff, CurrentLatitude: pos.coords.latitude, CurrentLongitude: pos.coords.longitude });
+            onShowToast("📍 ส่งพิกัด GPS สดเรียบร้อย ลูกค้ามองเห็นตำแหน่งปัจจุบันของคุณแล้ว", "success");
+          } else {
+            throw new Error("ไม่สามารถบันทึกพิกัดได้");
+          }
+        } catch (e: any) {
+          onShowToast(e.message || "เกิดข้อผิดพลาดในการส่งพิกัด", "error");
+        } finally {
+          setIsUpdatingGPS(false);
+        }
+      },
+      (err) => {
+        setIsUpdatingGPS(false);
+        onShowToast("กรุณาอนุญาตการเข้าถึงตำแหน่ง (GPS) ในเบราว์เซอร์", "error");
+      },
+      { enableHighAccuracy: true, timeout: 7000 }
+    );
   };
 
   // Respond to Booking Offer
@@ -475,6 +536,42 @@ export default function StaffPanel({
               staff.Available === 'ON' ? 'translate-x-7' : 'translate-x-0'
             }`} />
           </div>
+        </button>
+      </div>
+
+      {/* GPS Location Broadcast Bar */}
+      <div className="bg-sky-50/80 border border-sky-200/80 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-xs">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`p-2 rounded-xl shrink-0 ${staff.Available === 'ON' ? 'bg-sky-500 text-white shadow-sm' : 'bg-slate-200 text-slate-500'}`}>
+            <Compass className={`w-4 h-4 ${isUpdatingGPS ? 'animate-spin' : ''}`} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-800">ตำแหน่ง GPS สดของคุณ</span>
+              {staff.Available === 'ON' ? (
+                <span className="text-[9px] bg-emerald-100 text-emerald-700 font-extrabold px-1.5 py-0.5 rounded">
+                  ลูกค้ามองเห็นคุณบนแผนที่
+                </span>
+              ) : (
+                <span className="text-[9px] bg-slate-100 text-slate-500 font-extrabold px-1.5 py-0.5 rounded">
+                  ซ่อนตำแหน่ง (ออฟไลน์)
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-500 font-mono truncate">
+              พิกัด: {(staff.CurrentLatitude || 13.7797).toFixed(4)}, {(staff.CurrentLongitude || 100.5447).toFixed(4)}
+            </p>
+          </div>
+        </div>
+        
+        <button
+          type="button"
+          onClick={handleManualGPSUpdate}
+          disabled={isUpdatingGPS}
+          className="bg-white hover:bg-sky-100 border border-sky-300 text-sky-700 text-[10px] font-extrabold px-2.5 py-2 rounded-xl shadow-xs transition-all shrink-0 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center gap-1"
+        >
+          <Compass className={`w-3.5 h-3.5 text-sky-600 ${isUpdatingGPS ? 'animate-spin' : ''}`} />
+          <span>{isUpdatingGPS ? 'กำลังส่ง...' : 'อัปเดต GPS'}</span>
         </button>
       </div>
 

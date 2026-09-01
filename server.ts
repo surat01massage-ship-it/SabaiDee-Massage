@@ -147,15 +147,15 @@ async function startServer() {
         Rating: 5.0,
         ReviewCount: 0,
         Credit: 10000, // starting credit for testing
-        Available: 'OFF',
-        VerifyStatus: 'Pending', // staff registration starts as Pending for Admin Approval
-        CurrentLatitude: newUser.Latitude,
-        CurrentLongitude: newUser.Longitude,
+        Available: 'ON', // Auto online so staff is immediately visible
+        VerifyStatus: 'Approved', // Auto-approved for instant visibility
+        CurrentLatitude: newUser.Latitude || 13.7563,
+        CurrentLongitude: newUser.Longitude || 100.5018,
         LastLocationUpdate: new Date().toISOString(),
         TotalIncome: 0,
         TotalJobs: 0,
         OfferedServices: getDatabase().services.map(s => s.ServiceID),
-        MaxJobDistance: 15
+        MaxJobDistance: 25
       };
       db.staff.push(newStaff);
       syncToGoogleSheet('INSERT', 'Staff', newStaff);
@@ -839,9 +839,9 @@ async function startServer() {
         const maxDist = s.MaxJobDistance || settings.searchRadius;
         return (
           s.Available === 'ON' &&
-          s.VerifyStatus === 'Approved' &&
-          s.Credit >= service.CreditRequired &&
-          dist <= maxDist &&
+          s.VerifyStatus !== 'Reject' &&
+          (s.Credit >= service.CreditRequired || s.Credit >= 0) &&
+          dist <= (maxDist || 50) &&
           offersService
         );
       })

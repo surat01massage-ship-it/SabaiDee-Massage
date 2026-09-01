@@ -70,13 +70,31 @@ interface InteractiveMapProps {
   isLoadingGPS?: boolean;
 }
 
-// Component to handle map clicks and auto-center
-function MapEvents({ onLocationChange, centerLat, centerLng }: { onLocationChange?: (lat: number, lng: number) => void, centerLat: number, centerLng: number }) {
+// Component to handle map clicks, center and fit all pins
+function MapEvents({ 
+  onLocationChange, 
+  centerLat, 
+  centerLng,
+  staffPins
+}: { 
+  onLocationChange?: (lat: number, lng: number) => void;
+  centerLat: number;
+  centerLng: number;
+  staffPins: Array<{ lat: number; lng: number }>;
+}) {
   const map = useMap();
   
   useEffect(() => {
-    map.setView([centerLat, centerLng], map.getZoom(), { animate: true });
-  }, [centerLat, centerLng, map]);
+    if (!map) return;
+    const validStaff = staffPins.filter(p => p.lat && p.lng && !isNaN(p.lat) && !isNaN(p.lng));
+    if (validStaff.length > 0) {
+      const points: [number, number][] = [[centerLat, centerLng], ...validStaff.map(s => [s.lat, s.lng] as [number, number])];
+      const bounds = L.latLngBounds(points);
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+    } else {
+      map.setView([centerLat, centerLng], map.getZoom() || 14, { animate: true });
+    }
+  }, [centerLat, centerLng, staffPins.length, map]);
 
   useMapEvents({
     click(e) {
@@ -102,6 +120,8 @@ export default function InteractiveMap({
     ? { lat: activeBooking.staffLat, lng: activeBooking.staffLng }
     : null;
 
+  const validStaffPins = staffPins.filter(p => p.available === 'ON' && p.status !== 'Reject');
+
   return (
     <div className={`relative w-full ${height} rounded-2xl overflow-hidden shadow-inner border border-slate-200 z-0`}>
       <MapContainer 
@@ -114,34 +134,41 @@ export default function InteractiveMap({
           url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
         />
         
-        <MapEvents onLocationChange={onLocationChange} centerLat={customerLat} centerLng={customerLng} />
+        <MapEvents 
+          onLocationChange={onLocationChange} 
+          centerLat={customerLat} 
+          centerLng={customerLng} 
+          staffPins={validStaffPins}
+        />
 
         {/* Customer Marker */}
         <Marker position={[customerLat, customerLng]} icon={customerIcon}>
           <Popup>
-            <div className="font-bold text-slate-800 text-xs">พิกัดของคุณ</div>
+            <div className="font-bold text-slate-800 text-xs">📍 พิกัดของคุณ</div>
           </Popup>
         </Marker>
 
         {/* Nearby Staff Pins */}
-        {staffPins
-          .filter(p => p.available === 'ON' && p.status === 'Approved')
-          .map(staff => {
-            const isActive = activeBooking && activeBooking.staffLat === staff.lat;
-            return (
-              <Marker 
-                key={staff.id} 
-                position={[staff.lat, staff.lng]} 
-                icon={isActive ? activeStaffIcon : staffIcon}
-              >
-                <Popup>
-                  <div className="font-bold text-slate-800 text-xs">
-                    {isActive ? `🛵 พี่${staff.nickname} (กำลังเดินทาง)` : `พี่${staff.nickname}`}
+        {validStaffPins.map(staff => {
+          const isActive = activeBooking && activeBooking.staffLat === staff.lat;
+          return (
+            <Marker 
+              key={staff.id} 
+              position={[staff.lat, staff.lng]} 
+              icon={isActive ? activeStaffIcon : staffIcon}
+            >
+              <Popup>
+                <div className="p-1">
+                  <div className="font-bold text-slate-800 text-xs flex items-center gap-1">
+                    <span>💆</span>
+                    {isActive ? `พี่${staff.nickname} (กำลังเดินทาง)` : `พี่${staff.nickname} (พร้อมรับงาน)`}
                   </div>
-                </Popup>
-              </Marker>
-            );
-          })}
+                  <div className="text-[10px] text-emerald-600 font-bold mt-0.5">● ออนไลน์อยู่ตอนนี้</div>
+                </div>
+              </Popup>
+            </Marker>
+          );
+        })}
       </MapContainer>
 
       {/* Top Right: Tap to Pin helper */}

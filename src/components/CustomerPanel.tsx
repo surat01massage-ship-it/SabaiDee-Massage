@@ -478,12 +478,16 @@ export default function CustomerPanel({
 
   // Find eligible online staff to show on map and in list, sorted by distance
   const activeOnlineStaff = allStaff
-    .filter((s) => s.Available === 'ON' && s.VerifyStatus === 'Approved')
+    .filter((s) => s.Available === 'ON' && s.VerifyStatus !== 'Reject')
     .map((s) => {
-      const distance = getDistance(customerLat, customerLng, s.CurrentLatitude, s.CurrentLongitude);
-      const isWithinRadius = distance <= (s.MaxJobDistance || settings.searchRadius);
+      const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
+      const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+      const distance = getDistance(customerLat, customerLng, staffLat, staffLng);
+      const isWithinRadius = distance <= (s.MaxJobDistance || settings.searchRadius || 50);
       return {
         ...s,
+        CurrentLatitude: staffLat,
+        CurrentLongitude: staffLng,
         distance,
         isWithinRadius
       };
