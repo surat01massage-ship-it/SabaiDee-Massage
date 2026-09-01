@@ -165,47 +165,6 @@ export default function App() {
     }, 4000);
   };
 
-  // Sandbox Fast Login Autofill shortcuts
-  const handleSandboxAutofill = async (role: 'Customer' | 'Staff' | 'Admin') => {
-    let phone = "";
-    let pwd = "";
-
-    if (role === 'Admin') {
-      phone = "0812345678";
-      pwd = "admin123";
-    } else if (role === 'Staff') {
-      phone = "0823456789"; // เจ้นง
-      pwd = "staff123";
-    } else {
-      phone = "0898765432"; // คุณอภิสิทธิ์
-      pwd = "customer123";
-    }
-
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, password: pwd })
-      });
-      
-      const contentType = res.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('เซิร์ฟเวอร์กำลังเชื่อมต่อหรือเริ่มต้นระบบใหม่ กรุณารอสักครู่แล้วลองอีกครั้งค่ะ');
-      }
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'ไม่สามารถเข้าสู่ระบบได้');
-
-      setCurrentUser(data.user);
-      setCurrentStaff(data.staff);
-      setUserRoleMode(data.user.Role);
-      showToast(`เข้าสู่ระบบในฐานะ ${data.user.Name} (${data.user.Role}) สำเร็จ!`, "success");
-      playChime();
-    } catch (e: any) {
-      showToast(e.message, "error");
-    }
-  };
-
   // Standard Login Submit handler
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -407,56 +366,6 @@ export default function App() {
                 แพลตฟอร์มเรียกบริการหมอนวดมืออาชีพถึงบ้าน สะดวก ปลอดภัย ตลอด 24 ชม.
               </p>
             </div>
-
-            {/* FAST LOGIN PRESET SHORTCUT SUGGESTION */}
-            {authMode === 'login' && (
-              <div className="space-y-3 pt-2 border-t border-slate-100">
-                <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block text-center">ทดสอบระบบด่วน (เลือกสิทธิ์การใช้งาน)</span>
-                <div className="grid grid-cols-1 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSandboxAutofill('Customer')}
-                    className="flex items-center gap-3 bg-white hover:bg-sky-50/50 border border-slate-200 p-3 rounded-2xl cursor-pointer transition-all group"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                      🙋
-                    </div>
-                    <div className="text-left">
-                      <span className="block text-sm font-bold text-slate-800 group-hover:text-sky-600 transition-colors">สำหรับลูกค้า (Customer)</span>
-                      <span className="block text-[10px] font-semibold text-slate-500">เข้าสู่ระบบเพื่อเรียกใช้งานนวด</span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSandboxAutofill('Staff')}
-                    className="flex items-center gap-3 bg-white hover:bg-emerald-50/50 border border-slate-200 p-3 rounded-2xl cursor-pointer transition-all group"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                      💆
-                    </div>
-                    <div className="text-left">
-                      <span className="block text-sm font-bold text-slate-800 group-hover:text-emerald-600 transition-colors">สำหรับผู้ให้บริการ (Staff)</span>
-                      <span className="block text-[10px] font-semibold text-slate-500">เข้าสู่ระบบเพื่อรับงานและจัดการรายได้</span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSandboxAutofill('Admin')}
-                    className="flex items-center gap-3 bg-white hover:bg-indigo-50/50 border border-slate-200 p-3 rounded-2xl cursor-pointer transition-all group"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                      ⚙️
-                    </div>
-                    <div className="text-left">
-                      <span className="block text-sm font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">สำหรับผู้ดูแลระบบ (Admin)</span>
-                      <span className="block text-[10px] font-semibold text-slate-500">จัดการข้อมูลผู้ใช้และอนุมัติรายการ</span>
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
 
             {/* STANDARD LOGIN FORM */}
             {authMode === 'login' ? (
@@ -820,14 +729,14 @@ export default function App() {
                 <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
                   <ShieldAlert className="w-5 h-5 shrink-0" />
                   <span>
-                    บัญชีผู้ใช้ปัจจุบันของคุณคือบทบาท **"{currentUser.Role}"** แต่หน้าจอนี้แสดงระบบ **"{userRoleMode}"**
+                    บัญชีของคุณเข้าสู่ระบบในบทบาท **"{currentUser.Role}"** อยู่ในขณะนี้
                   </span>
                 </div>
                 <button
-                  onClick={() => handleSandboxAutofill(userRoleMode)}
+                  onClick={() => setUserRoleMode(currentUser.Role)}
                   className="bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
                 >
-                  ซิงค์สิทธิ์หรือแก้ไขบัญชีด่วน
+                  สลับไปที่หน้า {currentUser.Role}
                 </button>
               </div>
             )}

@@ -251,15 +251,16 @@ export default function CustomerPanel({
     );
   };
 
-  // Set up polling for active booking status updates & notifications
+  // Set up polling for active booking status updates & notifications & live staff status
   useEffect(() => {
-    if (!currentUser) return;
-
     const interval = setInterval(() => {
-      fetchActiveBooking();
-      fetchNotifications();
-      // Hit match updates logic on server to advance offer queues
-      fetch('/api/bookings/match-updates').then(() => {}).catch(() => {});
+      fetchStaff();
+      if (currentUser) {
+        fetchActiveBooking();
+        fetchNotifications();
+        // Hit match updates logic on server to advance offer queues
+        fetch('/api/bookings/match-updates').then(() => {}).catch(() => {});
+      }
     }, 4000); // Poll every 4 seconds
 
     return () => clearInterval(interval);
@@ -475,14 +476,19 @@ export default function CustomerPanel({
     return parseFloat((R * c).toFixed(1));
   };
 
-  // Find eligible online staff to show on map
-  const activeOnlineStaff = allStaff.filter((s) => {
-    if (s.Available !== 'ON' || s.VerifyStatus !== 'Approved') return false;
-    const distance = getDistance(customerLat, customerLng, s.CurrentLatitude, s.CurrentLongitude);
-    const maxDist = s.MaxJobDistance || settings.searchRadius;
-    console.log(`Staff ${s.StaffID} (${s.Nickname}): distance=${distance}, maxDist=${maxDist}, status=${s.VerifyStatus}, avail=${s.Available}`);
-    return distance <= maxDist;
-  });
+  // Find eligible online staff to show on map and in list, sorted by distance
+  const activeOnlineStaff = allStaff
+    .filter((s) => s.Available === 'ON' && s.VerifyStatus === 'Approved')
+    .map((s) => {
+      const distance = getDistance(customerLat, customerLng, s.CurrentLatitude, s.CurrentLongitude);
+      const isWithinRadius = distance <= (s.MaxJobDistance || settings.searchRadius);
+      return {
+        ...s,
+        distance,
+        isWithinRadius
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
 
   return (
     <div className="space-y-6 max-w-lg mx-auto pb-10" id="customer-view-root">
@@ -683,7 +689,62 @@ export default function CustomerPanel({
       {activeTab === 'home' && (
         <div className="space-y-6">
           
-          {/* STEP 1: Available Massage Therapists List - SHOWN IMMEDIATELY */}
+          {/* STEP 1: Live Interactive Map of Online Therapists */}
+          <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm space-y-3 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                  <span className="text-xl">🗺️</span>
+                  แผนที่พนักงานนวดออนไลน์สด
+                </h3>
+                <p className="text-[11px] text-slate-400 font-bold">พิกัดหมอนวดที่เปิดสถานะออนไลน์พร้อมรับงาน</p>
+              </div>
+              <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5 shrink-0">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                {activeOnlineStaff.length} คนออนไลน์
+              </span>
+            </div>
+
+            {/* Interactive Map */}
+            <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm relative">
+              <InteractiveMap 
+                customerLat={customerLat}
+                customerLng={customerLng}
+                staffPins={activeOnlineStaff.map(s => ({
+                  id: s.StaffID,
+                  nickname: s.Nickname,
+                  lat: s.CurrentLatitude,
+                  lng: s.CurrentLongitude,
+                  available: s.Available,
+                  status: s.VerifyStatus
+                }))}
+                height="h-[220px]"
+                onLocationChange={handleMapLocationChange}
+                onUseGPS={handleUseGPS}
+                isLoadingGPS={isLoadingGPS}
+              />
+            </div>
+
+            {/* Quick GPS Location Bar */}
+            <div className="flex items-center justify-between gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <MapPin className="w-4 h-4 text-sky-500 shrink-0" />
+                <span className="text-[11px] text-slate-600 font-semibold truncate">
+                  {customerAddress || `พิกัด ${customerLat.toFixed(4)}, ${customerLng.toFixed(4)}`}
+                </span>
+              </div>
+              <button
+                onClick={handleUseGPS}
+                disabled={isLoadingGPS}
+                className="text-[10px] font-black text-sky-600 bg-sky-50 hover:bg-sky-100 border border-sky-200/50 px-2.5 py-1 rounded-lg shrink-0 transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <Compass className={`w-3 h-3 ${isLoadingGPS ? 'animate-spin' : ''}`} />
+                {isLoadingGPS ? 'ค้นหา...' : 'อัปเดตพิกัด'}
+              </button>
+            </div>
+          </div>
+
+          {/* STEP 2: Available Massage Therapists List */}
           <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm space-y-4 animate-fade-in">
             <div className="flex items-center justify-between">
               <div>
@@ -695,7 +756,7 @@ export default function CustomerPanel({
               </div>
               <span className="text-[10px] font-extrabold text-sky-600 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-100 flex items-center gap-1.5 shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
-                {activeOnlineStaff.length} คนออนไลน์
+                {activeOnlineStaff.length} คนพร้อมรับงาน
               </span>
             </div>
 
@@ -705,13 +766,10 @@ export default function CustomerPanel({
                 <div className="bg-slate-50 rounded-2xl p-6 text-center border border-slate-100">
                   <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
                   <p className="text-xs font-bold text-slate-600 mt-2">ไม่มีหมอนวดออนไลน์ ณ เวลานี้</p>
-                  <p className="text-[10px] text-slate-400 mt-1">กรุณารอสักครู่ หมอนวดสลับมาให้บริการเป็นระยะค่ะ</p>
+                  <p className="text-[10px] text-slate-400 mt-1">เมื่อพนักงานสลับเปิดออนไลน์ ระบบจะแสดงพิกัดและรายชื่อทันทีค่ะ</p>
                 </div>
               ) : (
                 activeOnlineStaff.map((staff) => {
-                  const distance = getDistance(customerLat, customerLng, staff.CurrentLatitude, staff.CurrentLongitude);
-                  const isWithinRadius = distance <= (staff.MaxJobDistance || settings.searchRadius);
-
                   return (
                     <div 
                       key={staff.StaffID}
@@ -736,12 +794,13 @@ export default function CustomerPanel({
                               className="w-12 h-12 rounded-full object-cover border border-slate-100 group-hover:border-sky-200 transition-colors" 
                               alt={staff.Nickname} 
                             />
-                            <span className="absolute bottom-0 right-0 w-3 h-3 bg-sky-500 border-2 border-white rounded-full animate-pulse" />
+                            <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full animate-pulse" title="ออนไลน์" />
                           </div>
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-slate-800 text-sm group-hover:text-sky-700 transition-colors">พี่{staff.Nickname}</span>
-                              <div className="flex items-center text-amber-500 font-extrabold text-xs">
+                              <span className="bg-emerald-100 text-emerald-700 text-[9px] font-black px-1.5 py-0.5 rounded-full">ออนไลน์</span>
+                              <div className="flex items-center text-amber-500 font-extrabold text-xs ml-1">
                                 <Star className="w-3.5 h-3.5 fill-current" />
                                 <span className="ml-0.5">{staff.Rating}</span>
                               </div>
@@ -758,10 +817,10 @@ export default function CustomerPanel({
 
                         <div className="text-right flex flex-col items-end">
                           <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-bold group-hover:bg-sky-50 group-hover:text-sky-700 transition-colors">
-                            📍 {distance} กม.
+                            📍 {staff.distance} กม.
                           </span>
                           <span className="text-[9px] text-slate-400 font-semibold mt-1">
-                            {isWithinRadius ? 'อยู่ในเขตให้บริการ' : 'นอกเขตให้บริการ'}
+                            {staff.isWithinRadius ? 'อยู่ในเขตให้บริการ' : 'นอกเขตให้บริการ'}
                           </span>
                         </div>
                       </div>
