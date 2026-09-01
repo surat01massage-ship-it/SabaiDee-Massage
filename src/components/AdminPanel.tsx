@@ -1422,15 +1422,33 @@ export default function AdminPanel({
                 </span>
               </div>
 
-              <div className="bg-emerald-50/60 border border-emerald-100 rounded-2xl p-4 text-xs text-slate-700 space-y-2 leading-relaxed">
-                <div className="font-bold text-emerald-900 flex items-center gap-1.5 text-xs">
-                  💡 วิธีการทำงานให้แจ้งเตือนเข้าเฉพาะแอดมิน:
+              {/* Troubleshooting helper box */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4 text-xs text-slate-700 space-y-3 leading-relaxed">
+                <div className="font-extrabold text-amber-900 flex items-center gap-1.5 text-xs">
+                  ⚠️ เช็กลิสต์หากพบข้อผิดพลาด "LINE API Error (400: Failed to send messages)":
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600 pl-1">
-                  <li><strong>ส่งเข้า LINE ส่วนตัวแอดมิน:</strong> นำ <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-200 font-mono text-[10px] text-emerald-800">Your user ID</code> (ขึ้นต้นด้วยตัว U เช่น <span className="font-mono">U1a2b3c...</span>) จากหน้า LINE Developers มาใส่ในช่อง <em>Admin User ID / Group ID</em></li>
-                  <li><strong>ส่งเข้ากลุ่มเฉพาะทีมงานแอดมิน:</strong> เชิญ LINE OA เข้ากลุ่มแอดมิน แล้วนำ <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-200 font-mono text-[10px] text-emerald-800">Group ID</code> (ขึ้นต้นด้วย C เช่น <span className="font-mono">C1a2b3c...</span>) มาใส่</li>
-                  <li>ระบบใช้คำสั่ง <strong>Push Message</strong> ส่งตรงไปยังเป้าหมาย ไม่ได้ใช้ Broadcast ดังนั้นผู้ติดตามคนอื่น (ลูกค้า) จะไม่มีทางได้รับข้อความเหล่านี้เด็ดขาด</li>
-                </ul>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                  <div className="bg-white/80 border border-amber-200/70 rounded-xl p-3 space-y-1.5">
+                    <strong className="text-emerald-800 font-bold flex items-center gap-1">
+                      ✅ ทางเลือกที่ 1: ส่งเข้า LINE ส่วนตัวแอดมิน (ง่ายสุด ได้ทันที)
+                    </strong>
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 pl-0.5">
+                      <li>ใช้ค่า <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-emerald-700 font-bold">Your user ID</code> ที่ขึ้นต้นด้วยตัว <strong className="text-emerald-800">U</strong> (เช่น U1a2b3c...) จากแท็บ Basic settings</li>
+                      <li><strong className="text-rose-700">สำคัญ:</strong> กด **เพิ่มเพื่อน (Add Friend)** กับบอท LINE OA ของคุณก่อนทดสอบ</li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-white/80 border border-amber-200/70 rounded-xl p-3 space-y-1.5">
+                    <strong className="text-indigo-800 font-bold flex items-center gap-1">
+                      👥 ทางเลือกที่ 2: ส่งเข้ากลุ่ม LINE ทีมงาน (Group ID: C...)
+                    </strong>
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 pl-0.5">
+                      <li><strong className="text-rose-700">ขั้นตอนที่ 1:</strong> เข้า <a href="https://manager.line.biz" target="_blank" rel="noreferrer" className="text-sky-600 underline font-bold">LINE Official Account Manager</a> &gt; ตั้งค่า &gt; ตั้งค่าบัญชี &gt; **เปิด "อนุญาตให้บัญชีเข้าร่วมกลุ่มและแชทหลายคน"**</li>
+                      <li><strong className="text-rose-700">ขั้นตอนที่ 2:</strong> เชิญบอท LINE OA เข้าไปในกลุ่มแอดมิน</li>
+                    </ul>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1445,7 +1463,7 @@ export default function AdminPanel({
                     className="w-full text-xs font-mono font-medium border border-slate-200 rounded-xl p-3 bg-slate-50 focus:outline-none focus:border-emerald-500"
                     placeholder="eyJhbGciOiJIUzI1Ni..."
                   />
-                  <p className="text-[9px] text-slate-400">จากแท็บ Messaging API &gt; Channel access token ใน LINE Developers</p>
+                  <p className="text-[9px] text-slate-400">จากแท็บ Messaging API &gt; Channel access token (long-lived) ใน LINE Developers</p>
                 </div>
 
                 <div className="space-y-1">
@@ -1459,7 +1477,9 @@ export default function AdminPanel({
                     className="w-full text-xs font-mono font-medium border border-slate-200 rounded-xl p-3 bg-slate-50 focus:outline-none focus:border-emerald-500"
                     placeholder="Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx หรือ Cxxxxxx..."
                   />
-                  <p className="text-[9px] text-slate-400">จากแท็บ Basic settings &gt; Your user ID (ขึ้นต้นด้วย U) หรือ Group ID (ขึ้นต้นด้วย C)</p>
+                  <p className="text-[9px] text-slate-400">
+                    แนะนำใช้ User ID (ขึ้นต้นด้วย U จาก Basic settings) หรือ Group ID (ขึ้นต้นด้วย C)
+                  </p>
                 </div>
               </div>
 

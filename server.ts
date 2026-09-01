@@ -813,17 +813,26 @@ async function startServer() {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้ลูกค้า' });
     }
 
-    // Simple Haversine distance calculator helper
+    // Accurate Haversine distance calculator helper (in kilometers)
     const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-      const R = 6371; // km
+      if (
+        typeof lat1 !== 'number' || isNaN(lat1) ||
+        typeof lon1 !== 'number' || isNaN(lon1) ||
+        typeof lat2 !== 'number' || isNaN(lat2) ||
+        typeof lon2 !== 'number' || isNaN(lon2)
+      ) {
+        return 0;
+      }
+      if (lat1 === lat2 && lon1 === lon2) return 0;
+      const R = 6371; // Earth radius in km
       const dLat = (lat2 - lat1) * Math.PI / 180;
       const dLon = (lon2 - lon1) * Math.PI / 180;
       const a = 
-        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return parseFloat((R * c).toFixed(1));
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return parseFloat((R * c).toFixed(2));
     };
 
     // Calculate distance and travel fee for nearby online approved staff
@@ -834,7 +843,9 @@ async function startServer() {
     // Find and sort eligible staff (ON, Approved, Credit >= Service.CreditRequired, within search radius)
     const eligibleStaff = db.staff
       .filter(s => {
-        const dist = calculateDistance(clientLat, clientLng, s.CurrentLatitude, s.CurrentLongitude);
+        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
+        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+        const dist = calculateDistance(clientLat, clientLng, staffLat, staffLng);
         const offersService = !s.OfferedServices || s.OfferedServices.includes(serviceId);
         const maxDist = s.MaxJobDistance || settings.searchRadius;
         return (
@@ -846,7 +857,9 @@ async function startServer() {
         );
       })
       .map(s => {
-        const dist = calculateDistance(clientLat, clientLng, s.CurrentLatitude, s.CurrentLongitude);
+        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
+        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+        const dist = calculateDistance(clientLat, clientLng, staffLat, staffLng);
         let travelFee = parseFloat((dist * settings.travelFeePerKm).toFixed(2));
         
         if (settings.travelFeeTiers && settings.travelFeeTiers.length > 0) {
@@ -861,6 +874,8 @@ async function startServer() {
         
         return {
           ...s,
+          CurrentLatitude: staffLat,
+          CurrentLongitude: staffLng,
           dist,
           travelFee
         };
@@ -880,20 +895,8 @@ async function startServer() {
       }
     }
 
-    const distanceVal = bestStaff ? bestStaff.dist : 5.0; // default/mock
-    
-    let defaultTravelFee = parseFloat((distanceVal * settings.travelFeePerKm).toFixed(2));
-    if (settings.travelFeeTiers && settings.travelFeeTiers.length > 0) {
-      const sortedTiers = [...settings.travelFeeTiers].sort((a, b) => a.maxKm - b.maxKm);
-      for (const tier of sortedTiers) {
-        if (distanceVal >= tier.minKm && distanceVal <= tier.maxKm) {
-          defaultTravelFee = tier.fee;
-          break;
-        }
-      }
-    }
-    
-    const travelFeeVal = bestStaff ? bestStaff.travelFee : defaultTravelFee;
+    const distanceVal = bestStaff ? bestStaff.dist : 0.0;
+    const travelFeeVal = bestStaff ? bestStaff.travelFee : parseFloat((distanceVal * settings.travelFeePerKm).toFixed(2));
     const totalPriceVal = service.Price + travelFeeVal;
 
     const newBookingID = generateId('B');
@@ -1756,9 +1759,16 @@ Return strict JSON matching the schema.`
     const db = getDatabase();
     const webhookUrl = req.body?.webhookUrl || db.settings?.googleSheetWebhookUrl;
 
+    // 1. Google Sheets URL Validation & Smart Diagnosis
     if (!webhookUrl || !webhookUrl.startsWith('http')) {
       return res.status(400).json({ 
         error: 'กรุณาระบุ URL ของ Google Apps Script Web App เพื่อซิงค์ข้อมูลเข้า Google Sheets' 
+      });
+    }
+
+    if (webhookUrl.includes('docs.google.com/spreadsheets')) {
+      return res.status(400).json({
+        error: '❌ ลิงก์ที่กรอกคือลิงก์เปิดดู Google Sheets (docs.google.com) ไม่สามารถรับข้อมูลแบบ Webhook ได้โดยตรง กรุณาสร้าง Google Apps Script ตามคู่มือด้านล่าง แล้วนำ URL ของ Web App (ที่ขึ้นต้นด้วย https://script.google.com/macros/s/.../exec) มาใส่แทนค่ะ'
       });
     }
 
@@ -1785,7 +1795,12 @@ Return strict JSON matching the schema.`
       });
 
       if (!response.ok) {
-        throw new Error(`Google Apps Script ส่งสถานะตอบกลับ: ${response.status}`);
+        if (response.status === 404) {
+          throw new Error('ไม่พบ Web App URL นี้ (404 Not Found) กรุณาตรวจสอบว่าเลือก Deploy เป็น Web App แล้วหรือยัง');
+        } else if (response.status === 401 || response.status === 403) {
+          throw new Error('ติดสิทธิ์การเข้าถึง (403 Forbidden) กรุณาตั้งค่า Who has access (ผู้มีสิทธิ์เข้าถึง) ใน Apps Script Deployment ให้เป็น "Anyone" (ทุกคน)');
+        }
+        throw new Error(`Google Apps Script ส่งสถานะตอบกลับ: ${response.status} ${response.statusText}`);
       }
 
       // Save webhook url if provided
@@ -1804,6 +1819,31 @@ Return strict JSON matching the schema.`
         error: `ส่งข้อมูลเข้า Google Sheets ไม่สำเร็จ: ${err.message}` 
       });
     }
+  });
+
+  // LINE Webhook for automatic Group ID / User ID capture
+  let lastCapturedLineInfo: { groupId?: string; userId?: string; groupName?: string; time?: string } = {};
+
+  app.post('/api/line/webhook', (req, res) => {
+    try {
+      const events = req.body?.events || [];
+      for (const ev of events) {
+        if (ev.source) {
+          if (ev.source.groupId) {
+            lastCapturedLineInfo.groupId = ev.source.groupId;
+          }
+          if (ev.source.userId) {
+            lastCapturedLineInfo.userId = ev.source.userId;
+          }
+          lastCapturedLineInfo.time = new Date().toLocaleTimeString('th-TH');
+        }
+      }
+    } catch (e) {}
+    res.status(200).send('OK');
+  });
+
+  app.get('/api/line/captured-info', (req, res) => {
+    res.json(lastCapturedLineInfo);
   });
 
   // Test LINE Push Notification to Admin (Verify that only Admin receives message)
@@ -1834,8 +1874,24 @@ Return strict JSON matching the schema.`
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ message: response.statusText }));
+        const detailStr = Array.isArray(errorData.details) 
+          ? errorData.details.map((d: any) => d.message || JSON.stringify(d)).join(', ') 
+          : (errorData.details ? JSON.stringify(errorData.details) : '');
+        
+        let customHint = '';
+        if (response.status === 400) {
+          if (adminId.startsWith('C') || adminId.startsWith('c')) {
+            customHint = '\n\n💡 สาเหตุสำหรับ Group ID (ขึ้นต้นด้วย C):\n1. บอท LINE OA ยังไม่ได้ถูกเชิญเข้ากลุ่ม LINE นั้น\n2. หรือใน LINE Official Account Manager (manager.line.biz) ยังไม่ได้เปิดสิทธิ์ "อนุญาตให้บัญชีเข้าร่วมกลุ่มและแชทหลายคน (Allow account to join groups)"\n3. หากต้องการรับแจ้งเตือนคนเดียว ให้ใช้ User ID (ขึ้นต้นด้วย U จาก Basic settings) แทนได้เลยค่ะ';
+          } else if (adminId.startsWith('U') || adminId.startsWith('u')) {
+            customHint = '\n\n💡 สาเหตุสำหรับ User ID (ขึ้นต้นด้วย U):\nบัญชี LINE ส่วนตัวของคุณยังไม่ได้กดเพิ่มเพื่อน (Add Friend) กับ LINE OA ของบอทตัวนี้ค่ะ';
+          }
+        } else if (response.status === 401) {
+          customHint = '\n\n💡 สาเหตุ: Channel Access Token ไม่ถูกต้องหรือหมดอายุ (กรุณาไปที่แท็บ Messaging API ใน LINE Developers แล้วกด Issue Token ใหม่อีกครั้ง)';
+        }
+
+        const errorMsg = [errorData.message, detailStr].filter(Boolean).join(' - ') || response.statusText;
         return res.status(response.status).json({ 
-          error: `LINE API Error (${response.status}): ${errorData.message || JSON.stringify(errorData)}` 
+          error: `LINE API Error (${response.status}): ${errorMsg}${customHint}` 
         });
       }
 

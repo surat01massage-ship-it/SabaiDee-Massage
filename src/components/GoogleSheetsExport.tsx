@@ -125,13 +125,29 @@ export default function GoogleSheetsExport({ rawDb, onShowToast }: Props) {
           )}
         </div>
 
+        {webhookUrl.includes('docs.google.com/spreadsheets') && (
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+            <div className="font-bold flex items-center gap-1.5 text-amber-800">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              ข้อสังเกต: ลิงก์ที่กรอกคือลิงก์เปิดดู Google Sheets (docs.google.com)
+            </div>
+            <p className="text-[11px] text-amber-800/90 leading-relaxed">
+              Google Sheets ไม่สามารถรับข้อมูลอัตโนมัติจากภายนอกได้โดยตรง จำเป็นต้องใช้ <strong>Google Apps Script Web App</strong> (URL จะขึ้นต้นด้วย <span className="font-mono bg-white px-1 py-0.5 rounded border border-amber-300">https://script.google.com/macros/s/.../exec</span>) กรุณาดูวิธีสร้างที่กล่องแนะนำด้านล่างค่ะ
+            </p>
+          </div>
+        )}
+
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             type="url"
             value={webhookUrl}
             onChange={(e) => setWebhookUrl(e.target.value)}
             placeholder="https://script.google.com/macros/s/AKfycbx.../exec"
-            className="flex-1 text-xs font-mono bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-sky-500 shadow-xs"
+            className={`flex-1 text-xs font-mono bg-white border rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none shadow-xs ${
+              webhookUrl.includes('docs.google.com/spreadsheets')
+                ? 'border-amber-400 focus:border-amber-500'
+                : 'border-slate-200 focus:border-sky-500'
+            }`}
           />
           <button
             onClick={handleSyncToGoogleSheets}
@@ -151,9 +167,9 @@ export default function GoogleSheetsExport({ rawDb, onShowToast }: Props) {
         )}
 
         {syncStatus === 'error' && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-xs text-rose-800">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-            <span>{syncMessage}</span>
+          <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2 text-xs text-rose-800">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div className="whitespace-pre-line leading-relaxed">{syncMessage}</div>
           </div>
         )}
       </div>

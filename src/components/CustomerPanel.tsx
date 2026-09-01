@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   MapPin, Phone, Star, Sparkles, MessageSquare, Clock, Shield, CheckCircle, 
-  ChevronRight, AlertTriangle, X, ShoppingBag, Send, ListCollapse, Award, Compass
+  ChevronRight, AlertTriangle, X, ShoppingBag, Send, ListCollapse, Award, Compass,
+  Navigation, ExternalLink
 } from 'lucide-react';
 import { User, Staff, Service, Booking, Review, Notification, AppSettings } from '../types';
 import InteractiveMap from './InteractiveMap';
+import { calculateDistance, formatDistance, formatDistanceCompact, calculateTravelFee, getGoogleMapsDirectionsUrl } from '../utils/distance';
 
 interface CustomerPanelProps {
   currentUser: User | null;
@@ -463,26 +465,13 @@ export default function CustomerPanel({
     }
   };
 
-  // Calculate distance between two points
-  const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-    const R = 6371; // km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return parseFloat((R * c).toFixed(1));
-  };
-
   // Find eligible online staff to show on map and in list, sorted by distance
   const activeOnlineStaff = allStaff
     .filter((s) => s.Available === 'ON' && s.VerifyStatus !== 'Reject')
     .map((s) => {
       const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
       const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
-      const distance = getDistance(customerLat, customerLng, staffLat, staffLng);
+      const distance = calculateDistance(customerLat, customerLng, staffLat, staffLng);
       const isWithinRadius = distance <= (s.MaxJobDistance || settings.searchRadius || 50);
       return {
         ...s,
@@ -821,7 +810,7 @@ export default function CustomerPanel({
 
                         <div className="text-right flex flex-col items-end">
                           <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-bold group-hover:bg-sky-50 group-hover:text-sky-700 transition-colors">
-                            📍 {staff.distance} กม.
+                            📍 {formatDistance(staff.distance)}
                           </span>
                           <span className="text-[9px] text-slate-400 font-semibold mt-1">
                             {staff.isWithinRadius ? 'อยู่ในเขตให้บริการ' : 'นอกเขตให้บริการ'}
@@ -1159,33 +1148,23 @@ export default function CustomerPanel({
                       </div>
                       
                       {(() => {
-                        const distance = getDistance(customerLat, customerLng, selectedStaffProfile.CurrentLatitude, selectedStaffProfile.CurrentLongitude);
-                        let travelFee = parseFloat((distance * settings.travelFeePerKm).toFixed(2));
-                        let feeFormulaText = `ค่าเดินทางคิดกิโลเมตรละ ฿${settings.travelFeePerKm}`;
-
-                        if (settings.travelFeeTiers && settings.travelFeeTiers.length > 0) {
-                          const sortedTiers = [...settings.travelFeeTiers].sort((a, b) => a.maxKm - b.maxKm);
-                          let matchedTier = false;
-                          for (const tier of sortedTiers) {
-                            if (distance >= tier.minKm && distance <= tier.maxKm) {
-                              travelFee = tier.fee;
-                              feeFormulaText = `คิดค่าเดินทางตามช่วงระยะทาง ${tier.minKm}-${tier.maxKm} กม. (฿${tier.fee})`;
-                              matchedTier = true;
-                              break;
-                            }
-                          }
-                          // If distance is higher than highest tier, fallback to perKm calculation
-                          if (!matchedTier && sortedTiers.length > 0 && distance > sortedTiers[sortedTiers.length - 1].maxKm) {
-                            feeFormulaText = `ระยะทางเกินกำหนด คิดค่าเดินทางกิโลเมตรละ ฿${settings.travelFeePerKm}`;
-                          }
-                        }
-
+                        const distance = calculateDistance(
+                          customerLat, 
+                          customerLng, 
+                          typeof selectedStaffProfile.CurrentLatitude === 'number' ? selectedStaffProfile.CurrentLatitude : 13.7563, 
+                          typeof selectedStaffProfile.CurrentLongitude === 'number' ? selectedStaffProfile.CurrentLongitude : 100.5018
+                        );
+                        const { fee: travelFee, description: feeFormulaText } = calculateTravelFee(
+                          distance,
+                          settings.travelFeePerKm,
+                          settings.travelFeeTiers
+                        );
                         const totalPayment = selectedService.Price + travelFee;
 
                         return (
                           <>
                             <div className="flex justify-between font-medium">
-                              <span>ค่าเดินทางจัดส่ง (ระยะทาง {distance.toFixed(2)} กม.)</span>
+                              <span>ค่าเดินทางจัดส่ง ({formatDistance(distance)})</span>
                               <span className="font-bold text-slate-800">฿{travelFee.toFixed(2)}</span>
                             </div>
                             <div className="border-t border-slate-200/60 my-2 pt-2.5 flex justify-between text-sm font-black text-slate-900">

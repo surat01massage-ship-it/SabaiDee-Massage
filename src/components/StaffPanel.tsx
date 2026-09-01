@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { 
   DollarSign, Clock, Star, MapPin, CheckCircle, Bell, History, TrendingUp, 
   User as UserIcon, LogOut, Check, X, ShieldAlert, CreditCard, ChevronRight, Upload,
-  Compass, ExternalLink
+  Compass, ExternalLink, Navigation
 } from 'lucide-react';
 import { User, Staff, Booking, CreditTransaction, AppSettings } from '../types';
+import InteractiveMap from './InteractiveMap';
+import { calculateDistance, formatDistance, formatDistanceCompact, getGoogleMapsDirectionsUrl } from '../utils/distance';
 
 interface StaffPanelProps {
   currentUser: User | null;
@@ -31,6 +33,10 @@ export default function StaffPanel({
   // UI state controllers
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'credit' | 'profile'>('dashboard');
   const [isUpdatingGPS, setIsUpdatingGPS] = useState(false);
+  const [showStaffMapModal, setShowStaffMapModal] = useState(false);
+  const [tempStaffLat, setTempStaffLat] = useState<number>(staff?.CurrentLatitude || 13.7563);
+  const [tempStaffLng, setTempStaffLng] = useState<number>(staff?.CurrentLongitude || 100.5018);
+  const [staffAddressHint, setStaffAddressHint] = useState<string>("");
   
   // Database states
   const [bookings, setBookings] = useState<any[]>([]);
@@ -540,13 +546,13 @@ export default function StaffPanel({
       </div>
 
       {/* GPS Location Broadcast Bar */}
-      <div className="bg-sky-50/80 border border-sky-200/80 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-xs">
+      <div className="bg-sky-50/80 border border-sky-200/80 rounded-2xl p-3.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shadow-xs">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className={`p-2 rounded-xl shrink-0 ${staff.Available === 'ON' ? 'bg-sky-500 text-white shadow-sm' : 'bg-slate-200 text-slate-500'}`}>
             <Compass className={`w-4 h-4 ${isUpdatingGPS ? 'animate-spin' : ''}`} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-xs font-bold text-slate-800">ตำแหน่ง GPS สดของคุณ</span>
               {staff.Available === 'ON' ? (
                 <span className="text-[9px] bg-emerald-100 text-emerald-700 font-extrabold px-1.5 py-0.5 rounded">
@@ -564,16 +570,121 @@ export default function StaffPanel({
           </div>
         </div>
         
-        <button
-          type="button"
-          onClick={handleManualGPSUpdate}
-          disabled={isUpdatingGPS}
-          className="bg-white hover:bg-sky-100 border border-sky-300 text-sky-700 text-[10px] font-extrabold px-2.5 py-2 rounded-xl shadow-xs transition-all shrink-0 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center gap-1"
-        >
-          <Compass className={`w-3.5 h-3.5 text-sky-600 ${isUpdatingGPS ? 'animate-spin' : ''}`} />
-          <span>{isUpdatingGPS ? 'กำลังส่ง...' : 'อัปเดต GPS'}</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setTempStaffLat(staff.CurrentLatitude || 13.7563);
+              setTempStaffLng(staff.CurrentLongitude || 100.5018);
+              setShowStaffMapModal(true);
+            }}
+            className="flex-1 sm:flex-none bg-sky-500 hover:bg-sky-600 text-white text-[10px] font-extrabold px-3 py-2 rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1"
+          >
+            <MapPin className="w-3.5 h-3.5" />
+            <span>ปักหมุดบนแผนที่</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleManualGPSUpdate}
+            disabled={isUpdatingGPS}
+            className="flex-1 sm:flex-none bg-white hover:bg-sky-100 border border-sky-300 text-sky-700 text-[10px] font-extrabold px-2.5 py-2 rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1"
+          >
+            <Compass className={`w-3.5 h-3.5 text-sky-600 ${isUpdatingGPS ? 'animate-spin' : ''}`} />
+            <span>{isUpdatingGPS ? 'กำลังส่ง...' : 'ดึง GPS'}</span>
+          </button>
+        </div>
       </div>
+
+      {/* Staff Map Location Pinning Modal */}
+      {showStaffMapModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 shadow-2xl space-y-4 animate-scale-up text-left">
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-black text-slate-800 flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-sky-500" />
+                  ปักหมุดตำแหน่งปัจจุบันของพนักงาน
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  แตะบนแผนที่เพื่อระบุจุดที่คุณอยู่จริง เพื่อให้ระบบคำนวณระยะทางกับลูกค้าได้แม่นยำ 100%
+                </p>
+              </div>
+              <button
+                onClick={() => setShowStaffMapModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="h-[280px] rounded-2xl overflow-hidden border border-slate-200 shadow-inner">
+              <InteractiveMap
+                customerLat={tempStaffLat}
+                customerLng={tempStaffLng}
+                staffPins={[]}
+                height="h-[280px]"
+                onLocationChange={(lat, lng) => {
+                  setTempStaffLat(lat);
+                  setTempStaffLng(lng);
+                }}
+                onUseGPS={() => {
+                  if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                      (pos) => {
+                        setTempStaffLat(pos.coords.latitude);
+                        setTempStaffLng(pos.coords.longitude);
+                      },
+                      (err) => onShowToast("ไม่สามารถดึง GPS ได้ กรุณาแตะบนแผนที่เพื่อปักหมุด", "info"),
+                      { enableHighAccuracy: true }
+                    );
+                  }
+                }}
+              />
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between text-xs">
+              <span className="text-slate-500 font-semibold">พิกัดที่เลือก:</span>
+              <span className="font-mono font-bold text-sky-700">{tempStaffLat.toFixed(5)}, {tempStaffLng.toFixed(5)}</span>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowStaffMapModal(false)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await fetch('/api/staff/location', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        staffId: staff.StaffID,
+                        latitude: tempStaffLat,
+                        longitude: tempStaffLng
+                      })
+                    });
+                    const updated = { ...staff, CurrentLatitude: tempStaffLat, CurrentLongitude: tempStaffLng };
+                    onUpdateStaffData(updated);
+                    onShowToast("📍 บันทึกตำแหน่งพนักงานเรียบร้อยแล้ว", "success");
+                    setShowStaffMapModal(false);
+                  } catch (e: any) {
+                    onShowToast("เกิดข้อผิดพลาดในการบันทึกพิกัด", "error");
+                  }
+                }}
+                className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-3 rounded-xl text-xs shadow-md transition-colors cursor-pointer"
+              >
+                บันทึกตำแหน่งนี้
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* REVENUE STATS METRIC DASHBOARD */}
       {activeTab === 'dashboard' && (
@@ -661,12 +772,30 @@ export default function StaffPanel({
                   <span className="font-semibold text-slate-500">บริการ</span>
                   <span className="font-bold text-slate-900">{ongoingBooking.ServiceName} ({ongoingBooking.ServiceDuration} นาที)</span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="font-semibold text-slate-500">ระยะทางจริง</span>
+                  <span className="font-bold text-sky-700 font-mono">
+                    {formatDistance(
+                      calculateDistance(
+                        staff?.CurrentLatitude || 13.7563,
+                        staff?.CurrentLongitude || 100.5018,
+                        ongoingBooking.CustomerLatitude || 13.7431,
+                        ongoingBooking.CustomerLongitude || 100.5884
+                      )
+                    )}
+                  </span>
+                </div>
                 <div className="flex justify-between items-start">
                   <span className="font-semibold text-slate-500">พิกัดจัดส่ง</span>
                   <div className="text-right flex flex-col items-end gap-1">
                     <span className="font-bold text-slate-900 max-w-[200px] truncate" title={ongoingBooking.CustomerAddress}>{ongoingBooking.CustomerAddress}</span>
                     <a 
-                      href={`https://www.google.com/maps/search/?api=1&query=${ongoingBooking.CustomerLatitude || 13.7431},${ongoingBooking.CustomerLongitude || 100.5884}`}
+                      href={getGoogleMapsDirectionsUrl(
+                        staff?.CurrentLatitude || 13.7649,
+                        staff?.CurrentLongitude || 100.5383,
+                        ongoingBooking.CustomerLatitude || 13.7431,
+                        ongoingBooking.CustomerLongitude || 100.5884
+                      )}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-[10px] font-bold text-sky-600 hover:text-sky-700 bg-white border border-sky-100 rounded-md px-2 py-0.5 shadow-xs flex items-center gap-1 cursor-pointer transition-colors"
@@ -1207,18 +1336,18 @@ export default function StaffPanel({
             {/* Price & predicted distance */}
             <div className="bg-slate-50 border border-slate-100 p-4 rounded-2xl flex items-center justify-around">
               <div>
-                <span className="text-[9px] text-slate-400 block font-bold uppercase">ระยะทาง</span>
-                <span className="text-base font-black text-slate-800">{incomingBooking.Distance.toFixed(2)} กม.</span>
+                <span className="text-[9px] text-slate-400 block font-bold uppercase">ระยะทางจริง</span>
+                <span className="text-xs font-black text-slate-800">{formatDistance(incomingBooking.Distance)}</span>
               </div>
               <div className="w-[1px] h-8 bg-slate-200" />
               <div>
                 <span className="text-[9px] text-slate-400 block font-bold uppercase">ค่าเดินทาง</span>
-                <span className="text-base font-black text-slate-800">฿{incomingBooking.TravelFee.toFixed(2)}</span>
+                <span className="text-sm font-black text-slate-800">฿{incomingBooking.TravelFee.toFixed(2)}</span>
               </div>
               <div className="w-[1px] h-8 bg-slate-200" />
               <div>
                 <span className="text-[9px] text-slate-400 block font-bold uppercase">รายได้สุทธิ</span>
-                <span className="text-lg font-black text-sky-600">฿{incomingBooking.NetIncome || incomingBooking.TotalPrice}</span>
+                <span className="text-base font-black text-sky-600">฿{incomingBooking.NetIncome || incomingBooking.TotalPrice}</span>
               </div>
             </div>
 
