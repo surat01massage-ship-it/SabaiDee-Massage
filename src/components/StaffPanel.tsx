@@ -7,6 +7,7 @@ import {
 import { User, Staff, Booking, CreditTransaction, AppSettings } from '../types';
 import InteractiveMap from './InteractiveMap';
 import { calculateDistance, formatDistance, formatDistanceCompact, getGoogleMapsDirectionsUrl } from '../utils/distance';
+import { getRealCurrentLocation, watchRealLocation } from '../utils/geolocation';
 
 interface StaffPanelProps {
   currentUser: User | null;
@@ -167,46 +168,46 @@ export default function StaffPanel({
     return () => clearInterval(timer);
   }, [incomingBooking, onPlayNotificationSound]);
 
-  // Real GPS updater if online (Available: ON)
+  // Real GPS updater & automatic phone location sync
   useEffect(() => {
-    if (!staff || staff.Available !== 'ON') return;
+    if (!staff) return;
 
-    const updateLocationToServer = (lat: number, lng: number) => {
-      fetch('/api/staff/location', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          staffId: staff.StaffID,
-          latitude: lat,
-          longitude: lng
-        })
-      }).then(() => {
-        const updated = { ...staff, CurrentLatitude: lat, CurrentLongitude: lng };
-        onUpdateStaffData(updated);
-      }).catch(console.error);
+    const updateLocationToServer = async (lat: number, lng: number) => {
+      try {
+        const res = await fetch('/api/staff/location', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            staffId: staff.StaffID,
+            latitude: lat,
+            longitude: lng
+          })
+        });
+        if (res.ok) {
+          const updated = { ...staff, CurrentLatitude: lat, CurrentLongitude: lng };
+          onUpdateStaffData(updated);
+        }
+      } catch (e) {
+        console.error("Failed to update staff location to server:", e);
+      }
     };
 
-    // 1. Force location check right now
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => updateLocationToServer(pos.coords.latitude, pos.coords.longitude),
-        (err) => console.warn("Staff GPS init error (can be ignored in preview):", err.message),
-        { enableHighAccuracy: true }
-      );
+    // 1. Initial immediate location check on mount
+    getRealCurrentLocation(6000)
+      .then((geo) => updateLocationToServer(geo.latitude, geo.longitude))
+      .catch((err) => console.warn("Staff GPS initial error:", err.message));
+
+    // 2. Watch position continuously if Online
+    let unwatch: (() => void) | null = null;
+    if (staff.Available === 'ON') {
+      unwatch = watchRealLocation((geo) => {
+        updateLocationToServer(geo.latitude, geo.longitude);
+      });
     }
 
-    // 2. Poll every 15s to update real location
-    const gpsTimer = setInterval(() => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => updateLocationToServer(pos.coords.latitude, pos.coords.longitude),
-          (err) => console.warn("Staff GPS poll error (can be ignored in preview):", err.message),
-          { enableHighAccuracy: true }
-        );
-      }
-    }, 15000);
-
-    return () => clearInterval(gpsTimer);
+    return () => {
+      if (unwatch) unwatch();
+    };
   }, [staff?.Available, staff?.StaffID]);
 
   // Toggle online/offline status
@@ -234,68 +235,55 @@ export default function StaffPanel({
         "info"
       );
       
-      // If switched ON, immediately trigger location update
-      if (nextStatus === 'ON' && navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
+      // If switched ON, immediately update real phone GPS
+      if (nextStatus === 'ON') {
+        getRealCurrentLocation(6000)
+          .then((geo) => {
             fetch('/api/staff/location', {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 staffId: staff.StaffID,
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude
+                latitude: geo.latitude,
+                longitude: geo.longitude
               })
             }).then(() => {
-              onUpdateStaffData({ ...staff, Available: 'ON', CurrentLatitude: pos.coords.latitude, CurrentLongitude: pos.coords.longitude });
+              onUpdateStaffData({ ...staff, Available: 'ON', CurrentLatitude: geo.latitude, CurrentLongitude: geo.longitude });
             }).catch(console.error);
-          },
-          () => {},
-          { enableHighAccuracy: true }
-        );
+          })
+          .catch(console.warn);
       }
     } catch (e: any) {
       onShowToast(e.message, "error");
     }
   };
 
-  // Manual GPS update trigger
-  const handleManualGPSUpdate = () => {
-    if (!navigator.geolocation) {
-      onShowToast("เบราว์เซอร์ไม่รองรับ Geolocation GPS", "error");
-      return;
-    }
+  // Manual GPS update trigger with robust geolocation
+  const handleManualGPSUpdate = async () => {
     setIsUpdatingGPS(true);
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const res = await fetch('/api/staff/location', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              staffId: staff.StaffID,
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude
-            })
-          });
-          if (res.ok) {
-            onUpdateStaffData({ ...staff, CurrentLatitude: pos.coords.latitude, CurrentLongitude: pos.coords.longitude });
-            onShowToast("📍 ส่งพิกัด GPS สดเรียบร้อย ลูกค้ามองเห็นตำแหน่งปัจจุบันของคุณแล้ว", "success");
-          } else {
-            throw new Error("ไม่สามารถบันทึกพิกัดได้");
-          }
-        } catch (e: any) {
-          onShowToast(e.message || "เกิดข้อผิดพลาดในการส่งพิกัด", "error");
-        } finally {
-          setIsUpdatingGPS(false);
-        }
-      },
-      (err) => {
-        setIsUpdatingGPS(false);
-        onShowToast("กรุณาอนุญาตการเข้าถึงตำแหน่ง (GPS) ในเบราว์เซอร์", "error");
-      },
-      { enableHighAccuracy: true, timeout: 7000 }
-    );
+    onShowToast("🛰️ กำลังค้นหาตำแหน่ง GPS สดจากโทรศัพท์ของคุณ...", "info");
+    try {
+      const geo = await getRealCurrentLocation(8000);
+      const res = await fetch('/api/staff/location', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staffId: staff.StaffID,
+          latitude: geo.latitude,
+          longitude: geo.longitude
+        })
+      });
+      if (res.ok) {
+        onUpdateStaffData({ ...staff, CurrentLatitude: geo.latitude, CurrentLongitude: geo.longitude });
+        onShowToast(`📍 อัปเดตพิกัด GPS สดเรียบร้อย (${geo.latitude.toFixed(4)}, ${geo.longitude.toFixed(4)})`, "success");
+      } else {
+        throw new Error("ไม่สามารถบันทึกพิกัดได้");
+      }
+    } catch (e: any) {
+      onShowToast(e.message || "เกิดข้อผิดพลาดในการส่งพิกัด", "error");
+    } finally {
+      setIsUpdatingGPS(false);
+    }
   };
 
   // Respond to Booking Offer

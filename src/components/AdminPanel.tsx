@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Users, Briefcase, Calendar, DollarSign, Settings, Eye, Edit, Trash2, 
-  Check, X, Plus, ShieldCheck, Database, FileCode, Copy, Download, RefreshCw, BarChart2, ChevronRight
+  Check, X, Plus, ShieldCheck, Database, FileCode, Copy, Download, RefreshCw, BarChart2, ChevronRight,
+  MapPin, Compass
 } from 'lucide-react';
 import { User, Staff, Service, CreditTransaction, AppSettings } from '../types';
 import { googleAppsScriptFiles } from '../data/googleAppsScript';
 import GoogleSheetsExport from './GoogleSheetsExport';
 import StaffDetailModal from './StaffDetailModal';
+import { getRealCurrentLocation } from '../utils/geolocation';
 
 interface AdminPanelProps {
   currentUser: User | null;
@@ -734,6 +736,33 @@ export default function AdminPanel({
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    onShowToast("🛰️ กำลังดึงตำแหน่ง GPS ปัจจุบันเพื่อปรับพิกัดพนักงาน...", "info");
+                    const geo = await getRealCurrentLocation(8000);
+                    const res = await fetch('/api/admin/align-staff-location', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        latitude: geo.latitude,
+                        longitude: geo.longitude
+                      })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error);
+                    fetchStaffList();
+                    fetchAllUsers();
+                    onShowToast(`✅ ย้ายพิกัดพนักงานทั้งหมดมาที่ตำแหน่ง GPS (${geo.latitude.toFixed(4)}, ${geo.longitude.toFixed(4)}) แล้ว!`, "success");
+                  } catch (err: any) {
+                    onShowToast(err.message || "ไม่สามารถดึงตำแหน่ง GPS ได้", "error");
+                  }
+                }}
+                className="text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white px-3 py-1.5 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span>📍 ปรับพิกัดพนักงานทั้งหมดมาที่ GPS ของฉัน</span>
+              </button>
               <span className="text-xs font-bold bg-sky-50 text-sky-700 px-3 py-1.5 rounded-xl border border-sky-100">
                 พนักงานทั้งหมด: {allStaff.length} คน
               </span>

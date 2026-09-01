@@ -789,7 +789,70 @@ async function startServer() {
     }
 
     saveDatabase(db);
-    res.json({ success: true });
+    syncToGoogleSheet('UPDATE', 'Staff', db.staff[sIndex]);
+    res.json({ success: true, staff: db.staff[sIndex] });
+  });
+
+  // Update Customer / User location
+  app.put('/api/users/:id/location', (req, res) => {
+    const db = getDatabase();
+    const { id } = req.params;
+    const { latitude, longitude, address } = req.body;
+
+    const uIndex = db.users.findIndex(u => u.UserID === id);
+    if (uIndex === -1) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้ในระบบ' });
+    }
+
+    if (latitude !== undefined) db.users[uIndex].Latitude = parseFloat(latitude);
+    if (longitude !== undefined) db.users[uIndex].Longitude = parseFloat(longitude);
+    if (address) db.users[uIndex].Address = address;
+
+    saveDatabase(db);
+    res.json({ success: true, user: db.users[uIndex] });
+  });
+
+  // Align / Relocate all active staff near a given coordinate (for testing in local provinces like Surat Thani, etc.)
+  app.post('/api/admin/align-staff-location', (req, res) => {
+    const db = getDatabase();
+    const { latitude, longitude } = req.body;
+
+    const targetLat = parseFloat(latitude);
+    const targetLng = parseFloat(longitude);
+
+    if (isNaN(targetLat) || isNaN(targetLng)) {
+      return res.status(400).json({ error: 'พิกัดละติจูดหรือลองจิจูดไม่ถูกต้อง' });
+    }
+
+    // Offset offsets in km: ~0.5km to 2.5km scatter
+    const offsets = [
+      { dLat: 0.005, dLng: 0.006 },   // ~0.8 km NE
+      { dLat: -0.008, dLng: 0.004 },  // ~1.0 km SE
+      { dLat: 0.003, dLng: -0.009 },  // ~1.1 km NW
+      { dLat: -0.012, dLng: -0.007 }, // ~1.8 km SW
+      { dLat: 0.015, dLng: 0.010 }    // ~2.3 km NE
+    ];
+
+    db.staff.forEach((s, idx) => {
+      const offset = offsets[idx % offsets.length];
+      const newLat = parseFloat((targetLat + offset.dLat).toFixed(6));
+      const newLng = parseFloat((targetLng + offset.dLng).toFixed(6));
+
+      s.CurrentLatitude = newLat;
+      s.CurrentLongitude = newLng;
+      s.Available = 'ON';
+      s.VerifyStatus = 'Approved';
+      s.LastLocationUpdate = new Date().toISOString();
+
+      const u = db.users.find(user => user.UserID === s.UserID);
+      if (u) {
+        u.Latitude = newLat;
+        u.Longitude = newLng;
+      }
+    });
+
+    saveDatabase(db);
+    res.json({ success: true, message: `ย้ายพิกัดพนักงานทั้งหมดมายังพิกัด (${targetLat.toFixed(4)}, ${targetLng.toFixed(4)}) เรียบร้อยแล้ว`, count: db.staff.length });
   });
 
   // 5. Booking & Matching APIs

@@ -7,6 +7,7 @@ import { User, Staff, AppSettings } from './types';
 import CustomerPanel from './components/CustomerPanel';
 import StaffPanel from './components/StaffPanel';
 import AdminPanel from './components/AdminPanel';
+import { getRealCurrentLocation } from './utils/geolocation';
 
 let globalAudioCtx: any = null;
 const getAudioContext = () => {
@@ -213,11 +214,24 @@ export default function App() {
     const currentRole: 'Customer' | 'Staff' = authMode === 'register_staff' ? 'Staff' : 'Customer';
 
     try {
+      // Attempt to retrieve real phone GPS coordinates
+      let userLat = 13.7563;
+      let userLng = 100.5018;
+      try {
+        const geo = await getRealCurrentLocation(5000);
+        userLat = geo.latitude;
+        userLng = geo.longitude;
+      } catch (geoErr) {
+        console.warn("Could not fetch GPS on register, will use fallback:", geoErr);
+      }
+
       const payload = {
         name: regName,
         phone: regPhone,
         password: regPassword,
         role: currentRole,
+        latitude: userLat,
+        longitude: userLng,
         profileImage: currentRole === 'Staff' 
           ? "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150" 
           : "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",

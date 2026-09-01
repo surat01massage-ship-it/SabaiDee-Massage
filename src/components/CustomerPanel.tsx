@@ -7,6 +7,7 @@ import {
 import { User, Staff, Service, Booking, Review, Notification, AppSettings } from '../types';
 import InteractiveMap from './InteractiveMap';
 import { calculateDistance, formatDistance, formatDistanceCompact, calculateTravelFee, getGoogleMapsDirectionsUrl } from '../utils/distance';
+import { getRealCurrentLocation } from '../utils/geolocation';
 
 interface CustomerPanelProps {
   currentUser: User | null;
@@ -199,58 +200,102 @@ export default function CustomerPanel({
     }
   }, [currentUser]);
 
-  // Set initial location from current location or user object
+  const [isAligningStaff, setIsAligningStaff] = useState(false);
+
+  // Set initial location: auto-fetch real location on mount for all visitors
   useEffect(() => {
-    if (currentUser) {
-      // Set to mock data temporarily until GPS loads
-      setCustomerLat(currentUser.Latitude || 13.743122);
-      setCustomerLng(currentUser.Longitude || 100.588421);
+    let isMounted = true;
+
+    // If user has saved coords, load them first
+    if (currentUser?.Latitude && currentUser?.Longitude) {
+      setCustomerLat(currentUser.Latitude);
+      setCustomerLng(currentUser.Longitude);
       if (currentUser.Address) {
         setCustomerAddress(currentUser.Address);
       }
-      
-      // Auto-fetch real location on mount
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            setCustomerLat(position.coords.latitude);
-            setCustomerLng(position.coords.longitude);
-            handleReverseGeocode(position.coords.latitude, position.coords.longitude);
-          },
-          (error) => {
-            console.warn("Auto GPS error (can be ignored in preview):", error.message);
-          },
-          { enableHighAccuracy: true }
-        );
-      }
     }
-  }, [currentUser]);
+
+    // Try fetching real phone GPS automatically
+    getRealCurrentLocation(6000)
+      .then((geo) => {
+        if (!isMounted) return;
+        setCustomerLat(geo.latitude);
+        setCustomerLng(geo.longitude);
+        handleReverseGeocode(geo.latitude, geo.longitude);
+
+        // Sync to user profile on server if logged in
+        if (currentUser?.UserID) {
+          fetch(`/api/users/${currentUser.UserID}/location`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              latitude: geo.latitude,
+              longitude: geo.longitude
+            })
+          }).catch(console.error);
+        }
+      })
+      .catch((err) => {
+        console.warn("Auto GPS initial fetch (can be ignored in preview):", err.message);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.UserID]);
 
   // Function to use real GPS location with full loading indicator and accuracy
-  const handleUseGPS = () => {
-    if (!navigator.geolocation) {
-      onShowToast("อุปกรณ์หรือเบราว์เซอร์นี้ไม่รองรับการระบุพิกัด GPS", "error");
-      return;
-    }
+  const handleUseGPS = async () => {
     setIsLoadingGPS(true);
-    onShowToast("🛰️ กำลังค้นหาตำแหน่งปัจจุบันจากสัญญาณ GPS...", "info");
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        setCustomerLat(lat);
-        setCustomerLng(lng);
-        handleReverseGeocode(lat, lng);
-        setIsLoadingGPS(false);
-        onShowToast("✅ อัปเดตและปักหมุดตำแหน่งปัจจุบันจาก GPS สำเร็จแล้ว", "success");
-      },
-      (error) => {
-        console.warn("Geolocation error:", error);
-        setIsLoadingGPS(false);
-        onShowToast("⚠️ ไม่สามารถดึงตำแหน่ง GPS ได้ กรุณาอนุญาตสิทธิ์การเข้าถึงตำแหน่งหรือคลิกปักหมุดบนแผนที่", "error");
-      },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-    );
+    onShowToast("🛰️ กำลังค้นหาตำแหน่งปัจจุบันจากสัญญาณ GPS ในโทรศัพท์ของคุณ...", "info");
+    try {
+      const geo = await getRealCurrentLocation(10000);
+      setCustomerLat(geo.latitude);
+      setCustomerLng(geo.longitude);
+      handleReverseGeocode(geo.latitude, geo.longitude);
+
+      if (currentUser?.UserID) {
+        fetch(`/api/users/${currentUser.UserID}/location`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latitude: geo.latitude,
+            longitude: geo.longitude
+          })
+        }).catch(console.error);
+      }
+
+      onShowToast("✅ อัปเดตและปักหมุดตำแหน่งปัจจุบันจาก GPS สำเร็จแล้ว", "success");
+    } catch (error: any) {
+      console.warn("Geolocation error:", error);
+      onShowToast(error.message || "⚠️ ไม่สามารถดึงตำแหน่ง GPS ได้ กรุณาอนุญาตสิทธิ์การเข้าถึงตำแหน่งหรือคลิกปักหมุดบนแผนที่", "error");
+    } finally {
+      setIsLoadingGPS(false);
+    }
+  };
+
+  // Helper to bring sample/all staff to the customer's real location for realistic distance testing
+  const handleAlignStaffToMe = async () => {
+    setIsAligningStaff(true);
+    try {
+      const res = await fetch('/api/admin/align-staff-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          latitude: customerLat,
+          longitude: customerLng
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'ไม่สามารถย้ายพิกัดได้');
+
+      await fetchStaff();
+      onShowToast("📍 ย้ายพิกัดหมอนวดมาอยู่รอบตัวคุณแล้ว! (ระยะ 0.5 - 2.3 กม.)", "success");
+    } catch (e: any) {
+      onShowToast(e.message || "เกิดข้อผิดพลาดในการย้ายพิกัด", "error");
+    } finally {
+      setIsAligningStaff(false);
+    }
   };
 
   // Set up polling for active booking status updates & notifications & live staff status
@@ -752,6 +797,34 @@ export default function CustomerPanel({
                 {activeOnlineStaff.length} คนพร้อมรับงาน
               </span>
             </div>
+
+            {/* Distance / Location Calibration Notice if staff is far (>30km) */}
+            {activeOnlineStaff.length > 0 && activeOnlineStaff.some(s => s.distance > 30) && (
+              <div className="bg-sky-50 border border-sky-200 rounded-2xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-2.5">
+                  <div className="p-2 rounded-xl bg-sky-500 text-white shrink-0 mt-0.5">
+                    <Compass className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-slate-800 block">
+                      📍 คุณกำลังเปิดจากพิกัดจริง (เช่น สุราษฎร์ธานี หรือต่างจังหวัด)
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      ระบบตรวจพบระยะทางจริง {formatDistance(Math.min(...activeOnlineStaff.map(s => s.distance)))} จากหมอนวดตัวอย่าง
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAlignStaffToMe}
+                  disabled={isAligningStaff}
+                  className="w-full sm:w-auto bg-sky-600 hover:bg-sky-700 text-white text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 disabled:opacity-50 shrink-0 flex items-center justify-center gap-1.5"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>{isAligningStaff ? 'กำลังย้ายพิกัด...' : '✨ ย้ายหมอนวดมาอยู่ใกล้ฉัน (1-3 กม.)'}</span>
+                </button>
+              </div>
+            )}
 
             {/* Therapists list container */}
             <div className="space-y-3">
