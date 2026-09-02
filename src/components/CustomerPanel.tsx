@@ -36,9 +36,9 @@ export default function CustomerPanel({
   const [selectedStaffForBooking, setSelectedStaffForBooking] = useState<any | null>(null);
   const [selectedStaffReviews, setSelectedStaffReviews] = useState<any[]>([]);
   
-  // Custom Customer Location coordinates
-  const [customerLat, setCustomerLat] = useState(13.743122);
-  const [customerLng, setCustomerLng] = useState(100.588421);
+  // Custom Customer Location coordinates (Default: Surat Thani City Center)
+  const [customerLat, setCustomerLat] = useState(9.138244);
+  const [customerLng, setCustomerLng] = useState(99.321748);
   const [customerAddress, setCustomerAddress] = useState("");
   const [customerAddressDetail, setCustomerAddressDetail] = useState("");
 
@@ -514,8 +514,8 @@ export default function CustomerPanel({
   const activeOnlineStaff = allStaff
     .filter((s) => s.Available === 'ON' && s.VerifyStatus !== 'Reject')
     .map((s) => {
-      const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
-      const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+      const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 9.138244;
+      const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 99.321748;
       const distance = calculateDistance(customerLat, customerLng, staffLat, staffLng);
       const isWithinRadius = distance <= (s.MaxJobDistance || settings.searchRadius || 50);
       return {
@@ -1224,8 +1224,8 @@ export default function CustomerPanel({
                         const distance = calculateDistance(
                           customerLat, 
                           customerLng, 
-                          typeof selectedStaffProfile.CurrentLatitude === 'number' ? selectedStaffProfile.CurrentLatitude : 13.7563, 
-                          typeof selectedStaffProfile.CurrentLongitude === 'number' ? selectedStaffProfile.CurrentLongitude : 100.5018
+                          typeof selectedStaffProfile.CurrentLatitude === 'number' ? selectedStaffProfile.CurrentLatitude : 9.138244, 
+                          typeof selectedStaffProfile.CurrentLongitude === 'number' ? selectedStaffProfile.CurrentLongitude : 99.321748
                         );
                         const { fee: travelFee, description: feeFormulaText } = calculateTravelFee(
                           distance,

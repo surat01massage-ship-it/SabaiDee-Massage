@@ -85,14 +85,26 @@ function MapEvents({
   const map = useMap();
   
   useEffect(() => {
-    if (!map) return;
-    const validStaff = staffPins.filter(p => p.lat && p.lng && !isNaN(p.lat) && !isNaN(p.lng));
-    if (validStaff.length > 0) {
-      const points: [number, number][] = [[centerLat, centerLng], ...validStaff.map(s => [s.lat, s.lng] as [number, number])];
+    if (!map || isNaN(centerLat) || isNaN(centerLng)) return;
+
+    // Helper: calculate approx distance in km to avoid huge zoom out across provinces
+    const approxDistKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+      const dLat = (lat2 - lat1) * 111.32;
+      const dLon = (lon2 - lon1) * 111.32 * Math.cos((lat1 * Math.PI) / 180);
+      return Math.sqrt(dLat * dLat + dLon * dLon);
+    };
+
+    // Filter nearby staff only (< 40km) for map fitting bounds
+    const nearbyStaff = staffPins.filter(
+      p => p.lat && p.lng && !isNaN(p.lat) && !isNaN(p.lng) && approxDistKm(centerLat, centerLng, p.lat, p.lng) <= 40
+    );
+
+    if (nearbyStaff.length > 0) {
+      const points: [number, number][] = [[centerLat, centerLng], ...nearbyStaff.map(s => [s.lat, s.lng] as [number, number])];
       const bounds = L.latLngBounds(points);
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
     } else {
-      map.setView([centerLat, centerLng], map.getZoom() || 14, { animate: true });
+      map.setView([centerLat, centerLng], 14, { animate: true });
     }
   }, [centerLat, centerLng, staffPins.length, map]);
 

@@ -118,8 +118,8 @@ async function startServer() {
       Province: province || '',
       District: district || '',
       SubDistrict: subDistrict || '',
-      Latitude: parseFloat(latitude) || 13.7563,
-      Longitude: parseFloat(longitude) || 100.5018,
+      Latitude: parseFloat(latitude) || 9.138244,
+      Longitude: parseFloat(longitude) || 99.321748,
       ProfileImage: req.body.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=60',
       Role: role,
       Status: 'Active',
@@ -149,8 +149,8 @@ async function startServer() {
         Credit: 10000, // starting credit for testing
         Available: 'ON', // Auto online so staff is immediately visible
         VerifyStatus: 'Approved', // Auto-approved for instant visibility
-        CurrentLatitude: newUser.Latitude || 13.7563,
-        CurrentLongitude: newUser.Longitude || 100.5018,
+        CurrentLatitude: newUser.Latitude || 9.138244,
+        CurrentLongitude: newUser.Longitude || 99.321748,
         LastLocationUpdate: new Date().toISOString(),
         TotalIncome: 0,
         TotalJobs: 0,
@@ -906,8 +906,8 @@ async function startServer() {
     // Find and sort eligible staff (ON, Approved, Credit >= Service.CreditRequired, within search radius)
     const eligibleStaff = db.staff
       .filter(s => {
-        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
-        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 9.138244;
+        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 99.321748;
         const dist = calculateDistance(clientLat, clientLng, staffLat, staffLng);
         const offersService = !s.OfferedServices || s.OfferedServices.includes(serviceId);
         const maxDist = s.MaxJobDistance || settings.searchRadius;
@@ -920,8 +920,8 @@ async function startServer() {
         );
       })
       .map(s => {
-        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 13.7563;
-        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 100.5018;
+        const staffLat = typeof s.CurrentLatitude === 'number' ? s.CurrentLatitude : 9.138244;
+        const staffLng = typeof s.CurrentLongitude === 'number' ? s.CurrentLongitude : 99.321748;
         const dist = calculateDistance(clientLat, clientLng, staffLat, staffLng);
         let travelFee = parseFloat((dist * settings.travelFeePerKm).toFixed(2));
         

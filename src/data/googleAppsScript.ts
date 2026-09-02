@@ -287,8 +287,8 @@ function handleRegister(payload) {
     Province: payload.province || "",
     District: payload.district || "",
     SubDistrict: payload.subDistrict || "",
-    Latitude: payload.latitude || 13.7563,
-    Longitude: payload.longitude || 100.5018,
+    Latitude: payload.latitude || 9.138244,
+    Longitude: payload.longitude || 99.321748,
     ProfileImage: payload.profileImage || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150",
     Role: payload.role, // Customer / Staff
     Status: "Active",

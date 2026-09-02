@@ -35,8 +35,8 @@ export default function StaffPanel({
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'credit' | 'profile'>('dashboard');
   const [isUpdatingGPS, setIsUpdatingGPS] = useState(false);
   const [showStaffMapModal, setShowStaffMapModal] = useState(false);
-  const [tempStaffLat, setTempStaffLat] = useState<number>(staff?.CurrentLatitude || 13.7563);
-  const [tempStaffLng, setTempStaffLng] = useState<number>(staff?.CurrentLongitude || 100.5018);
+  const [tempStaffLat, setTempStaffLat] = useState<number>(staff?.CurrentLatitude || 9.138244);
+  const [tempStaffLng, setTempStaffLng] = useState<number>(staff?.CurrentLongitude || 99.321748);
   const [staffAddressHint, setStaffAddressHint] = useState<string>("");
   
   // Database states
@@ -553,7 +553,7 @@ export default function StaffPanel({
               )}
             </div>
             <p className="text-[10px] text-slate-500 font-mono truncate">
-              พิกัด: {(staff.CurrentLatitude || 13.7797).toFixed(4)}, {(staff.CurrentLongitude || 100.5447).toFixed(4)}
+              พิกัด: {(staff.CurrentLatitude || 9.1382).toFixed(4)}, {(staff.CurrentLongitude || 99.3217).toFixed(4)}
             </p>
           </div>
         </div>
@@ -562,8 +562,8 @@ export default function StaffPanel({
           <button
             type="button"
             onClick={() => {
-              setTempStaffLat(staff.CurrentLatitude || 13.7563);
-              setTempStaffLng(staff.CurrentLongitude || 100.5018);
+              setTempStaffLat(staff.CurrentLatitude || 9.138244);
+              setTempStaffLng(staff.CurrentLongitude || 99.321748);
               setShowStaffMapModal(true);
             }}
             className="flex-1 sm:flex-none bg-sky-500 hover:bg-sky-600 text-white text-[10px] font-extrabold px-3 py-2 rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1"
@@ -765,10 +765,10 @@ export default function StaffPanel({
                   <span className="font-bold text-sky-700 font-mono">
                     {formatDistance(
                       calculateDistance(
-                        staff?.CurrentLatitude || 13.7563,
-                        staff?.CurrentLongitude || 100.5018,
-                        ongoingBooking.CustomerLatitude || 13.7431,
-                        ongoingBooking.CustomerLongitude || 100.5884
+                        staff?.CurrentLatitude || 9.1382,
+                        staff?.CurrentLongitude || 99.3217,
+                        ongoingBooking.CustomerLatitude || 9.1372,
+                        ongoingBooking.CustomerLongitude || 99.3245
                       )
                     )}
                   </span>
@@ -779,10 +779,10 @@ export default function StaffPanel({
                     <span className="font-bold text-slate-900 max-w-[200px] truncate" title={ongoingBooking.CustomerAddress}>{ongoingBooking.CustomerAddress}</span>
                     <a 
                       href={getGoogleMapsDirectionsUrl(
-                        staff?.CurrentLatitude || 13.7649,
-                        staff?.CurrentLongitude || 100.5383,
-                        ongoingBooking.CustomerLatitude || 13.7431,
-                        ongoingBooking.CustomerLongitude || 100.5884
+                        staff?.CurrentLatitude || 9.1382,
+                        staff?.CurrentLongitude || 99.3217,
+                        ongoingBooking.CustomerLatitude || 9.1372,
+                        ongoingBooking.CustomerLongitude || 99.3245
                       )}
                       target="_blank"
                       rel="noopener noreferrer"
@@ -806,7 +806,7 @@ export default function StaffPanel({
                       🛵 ฉันเริ่มเดินทางแล้ว
                     </button>
                     <a
-                      href={`https://www.google.com/maps/dir/?api=1&origin=${staff?.CurrentLatitude || 13.7649},${staff?.CurrentLongitude || 100.5383}&destination=${ongoingBooking.CustomerLatitude || 13.7431},${ongoingBooking.CustomerLongitude || 100.5884}&travelmode=driving`}
+                      href={`https://www.google.com/maps/dir/?api=1&origin=${staff?.CurrentLatitude || 9.1382},${staff?.CurrentLongitude || 99.3217}&destination=${ongoingBooking.CustomerLatitude || 9.1372},${ongoingBooking.CustomerLongitude || 99.3245}&travelmode=driving`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-1 bg-sky-600 hover:bg-sky-700 text-white font-extrabold text-xs py-3 rounded-xl transition-colors cursor-pointer text-center flex items-center justify-center gap-1 shadow-sm"

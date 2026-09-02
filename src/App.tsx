@@ -80,9 +80,18 @@ export default function App() {
   // Floating Toasts alerts state list
   const [toasts, setToasts] = useState<Array<{ id: number; msg: string; type: 'success' | 'error' | 'info' }>>([]);
 
-  // Load settings on initial render
+  // Load settings and auto-request device GPS on initial render
   useEffect(() => {
     fetchSettings();
+
+    // Auto-detect real phone GPS coordinates on app load
+    getRealCurrentLocation(8000)
+      .then((geo) => {
+        console.log("📍 Initial device GPS acquired:", geo.latitude, geo.longitude);
+      })
+      .catch((err) => {
+        console.warn("Initial GPS request note:", err.message);
+      });
   }, []);
 
   // Unlock Audio on first interaction for mobile browsers
@@ -195,6 +204,42 @@ export default function App() {
       showToast(`ยินดีต้อนรับกลับมาค่ะ คุณ${data.user.Name}`, "success");
       playChime();
 
+      // Immediately fetch and sync real phone GPS on login
+      getRealCurrentLocation(8000)
+        .then(async (geo) => {
+          // Sync user GPS to server
+          if (data.user?.UserID) {
+            fetch(`/api/users/${data.user.UserID}/location`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                latitude: geo.latitude,
+                longitude: geo.longitude
+              })
+            }).catch(console.error);
+
+            setCurrentUser((prev) => prev ? { ...prev, Latitude: geo.latitude, Longitude: geo.longitude } : null);
+          }
+
+          // If staff, sync staff GPS to server
+          if (data.staff?.StaffID) {
+            fetch('/api/staff/location', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                staffId: data.staff.StaffID,
+                latitude: geo.latitude,
+                longitude: geo.longitude
+              })
+            }).catch(console.error);
+
+            setCurrentStaff((prev) => prev ? { ...prev, CurrentLatitude: geo.latitude, CurrentLongitude: geo.longitude } : null);
+          }
+        })
+        .catch((geoErr) => {
+          console.warn("Auto GPS sync on login note:", geoErr.message);
+        });
+
       // Clear forms
       setPhoneInput("");
       setPasswordInput("");
@@ -215,8 +260,8 @@ export default function App() {
 
     try {
       // Attempt to retrieve real phone GPS coordinates
-      let userLat = 13.7563;
-      let userLng = 100.5018;
+      let userLat = 9.138244;
+      let userLng = 99.321748;
       try {
         const geo = await getRealCurrentLocation(5000);
         userLat = geo.latitude;
